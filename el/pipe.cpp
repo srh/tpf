@@ -41,7 +41,7 @@ std::string format_epoll_events(uint32_t events) {
 unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
     {
         // Assert the FD is a pipe/fifo.
-        // TODO: Pipe colud be used with stream sockets, too, almost.
+        // TODO: Pipe could be used with stream sockets, too, almost.
         struct stat statbuf;
         int stat_res = ::fstat(fd, &statbuf);
         if (stat_res == -1) {
@@ -205,9 +205,10 @@ int Pipe::deregister_and_close() {
 
     // TODO: Is close non-blocking?
     int res = ::close(fd);
+    int errsv = res == 0 ? 0 : errno;
 
     static_assert(__linux__, "Linux-specific EINTR behavior here.");
-    return res;
+    return errsv;
 }
 
 void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (int)>&& close_cb) {
@@ -215,12 +216,13 @@ void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<vo
     tpf_assert(!pipe->waiting_write_cb_);
     tpf_assert(loop == pipe->loop_);
 
-    int res = pipe->deregister_and_close();
+    int errsv = pipe->deregister_and_close();
 
     // Destruct pipe before callback.
     pipe.reset();
 
-    loop->schedule([MC(close_cb), res] mutable { close_cb(res); });
+
+    loop->schedule([MC(close_cb), errsv] mutable { close_cb(errsv); });
 }
 
 }  // namespace el

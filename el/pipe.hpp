@@ -51,7 +51,7 @@ private:
     int deregister_and_close();
 };
 
-
+unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd);
 
 
 }
