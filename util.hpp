@@ -3,6 +3,17 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+
+using namespace std::literals::string_literals;
+
+#define NONCOPYABLE(typ) typ(const typ&) = delete; \
+void operator=(const typ&) = delete
+
+#define NONCOPYABLE_MOVABLE(typ) NONCOPYABLE(typ); \
+typ(typ&&) = default; \
+typ& operator=(typ&&) = default
 
 #define tpf_assert(pred) do { \
         if (!(pred)) { \
@@ -10,6 +21,22 @@
             abort(); \
         } \
     } while (false)
+
+// TODO: Remove all uses.
+using clumsy_error = std::runtime_error;
+
+struct strerror_buf {
+    NONCOPYABLE(strerror_buf);
+    // errmsg might not point into buf
+    char buf[128];
+    char *errmsg;
+    explicit strerror_buf(int errsv) {
+        errmsg = strerror_r(errsv, buf, std::size(buf));
+    }
+    const char *msg() const {
+        return errmsg;
+    }
+};
 
 
 #endif  // TPF_UTIL_HPP_

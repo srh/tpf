@@ -5,6 +5,8 @@ set(CMAKE_CXX_STANDARD 23)
 
 add_executable(tpf
         main.cpp
-        util.hpp)
+        util.hpp
+        el/loop.hpp
+        el/loop.cpp)
 
 target_include_directories(tpf PRIVATE .)
