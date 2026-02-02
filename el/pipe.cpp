@@ -93,8 +93,9 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
 void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
     tpf_assert(loop == loop_);
 
-    // The nbytes == 0 case has been considered.  Instead of scheduling the callback immediately, we perform a ::read
-    // only once edge-triggered, which may reveal some sort of error status.  (We could reverse this decision though.)
+    // The nbytes == 0 case has been considered.  Instead of scheduling the callback
+    // immediately, we perform a ::read only once edge-triggered, which may reveal some
+    // sort of error status.  (We could reverse this decision though.)
     tpf_assert(!waiting_read_cb_);
     tpf_assert(read_buf_ == nullptr);
     tpf_assert(read_nbytes_ == 0);
@@ -213,7 +214,7 @@ void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<vo
     tpf_assert(!pipe->waiting_read_cb_);
     tpf_assert(!pipe->waiting_write_cb_);
     tpf_assert(loop == pipe->loop_);
-    
+
     int res = pipe->deregister_and_close();
 
     // Destruct pipe before callback.

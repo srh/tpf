@@ -22,8 +22,9 @@ Loop::Loop() {
 
 bool Loop::has_stuff_to_do() const {
     tpf_assert(!mid_step_);
-    // TODO: It is possible that we have epoll registrants that are not waiting for anything. We should return false or
-    // error about a resource leak (assuming there are no enqueued actions, etc.) in that case.
+    // TODO: It is possible that we have epoll registrants that are not waiting for
+    // anything. We should return false or error about a resource leak (assuming there are
+    // no enqueued actions, etc.) in that case.
     return (!enqueued_actions_.empty() || !registrants_.empty());
 }
 
@@ -88,9 +89,9 @@ void Loop::handle_wakeups(bool blocking_wait) {
     for (int i = 0; i < res; ++i) {
         struct epoll_event *event = &events[i];
 
-        // TODO: Think twice about whether this is allowed to invoke callbacks here.
-        // What if we're reading and writing from the same fd, and one callback destroys
-        // the object?
+        // TODO: Think twice about whether this is allowed to invoke callbacks here. What
+        // if we're reading and writing from the same fd, and one callback destroys the
+        // object?
         auto *registrant = static_cast<EpollRegistrant *>(event->data.ptr);
         registrant->on_update(this, event->events);
     }

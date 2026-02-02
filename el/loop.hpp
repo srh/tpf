@@ -73,7 +73,8 @@ struct Loop {
     Fd epoll_fd_;
     bool mid_step_ = false;
 
-    // registrants_ have back-pointing indices (registered_index_) that need to be maintained
+    // registrants_ have back-pointing indices (registered_index_) that need to be
+    // maintained
     std::vector<EpollRegistrant *> registrants_;
     // TODO: Avoid use of std::move_only_function (generally)
     std::vector<std::move_only_function<void ()>> enqueued_actions_;
