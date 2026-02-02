@@ -7,6 +7,8 @@ add_executable(tpf
         main.cpp
         util.hpp
         el/loop.hpp
-        el/loop.cpp)
+        el/loop.cpp
+        el/pipe.cpp
+        el/pipe.hpp)
 
 target_include_directories(tpf PRIVATE .)

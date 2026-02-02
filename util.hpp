@@ -4,8 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 
+using std::make_unique;
+using std::unique_ptr;
 using namespace std::literals::string_literals;
 
 #define NONCOPYABLE(typ) typ(const typ&) = delete; \
@@ -15,12 +18,18 @@ void operator=(const typ&) = delete
 typ(typ&&) = default; \
 typ& operator=(typ&&) = default
 
+// Move-capture
+#define MC(name) name = std::move(name)
+
 #define tpf_assert(pred) do { \
         if (!(pred)) { \
             fprintf(stderr, "Assertion failed at %s:%d: %s\n", __FILE__, __LINE__, #pred); \
             abort(); \
         } \
     } while (false)
+
+// TODO: Remove.  Purpose is to avoid leaving stray printfs in initial code setup printfs.
+#define tpf_setupf(...) printf(__VA_ARGS__)
 
 // TODO: Remove all uses.
 using clumsy_error = std::runtime_error;

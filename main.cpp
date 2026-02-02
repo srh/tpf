@@ -10,7 +10,11 @@ int main(int argc, const char **argv) {
 
     {
         el::Loop loop;
-        printf("Constructed el::Loop\n");
+        tpf_setupf("Constructed el::Loop\n");
+
+        while (loop.has_stuff_to_do()) {
+            loop.full_step();
+        }
     }
 
     return 0;
