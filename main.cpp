@@ -16,28 +16,30 @@ void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el:
 
     char *buf_ptr = buf.get();
     auto *pipe_ptr = in_pipe.get();
-    pipe_ptr->read(loop, buf_ptr, TOY_BUF_SIZE, [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, size_t nbytes) mutable {
+    pipe_ptr->read(loop, buf_ptr, TOY_BUF_SIZE, [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t nbytes) mutable {
         if (errsv != 0) {
             throw clumsy_error("read error "s + strerror_buf(errsv).msg());
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
-                if (close_errsv != 0) {
-                    // TODO: Janky error messaging.
-                    tpf_setupf("close() errored on pipe: %s", strerror_buf(close_errsv).msg());
-                }
-                on_complete();
+            loop->schedule([loop, MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
+                el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
+                    if (close_errsv != 0) {
+                        // TODO: Janky error messaging.
+                        tpf_setupf("close() errored on pipe: %s", strerror_buf(close_errsv).msg());
+                    }
+                    on_complete();
+                });
             });
         } else {
-            tpf_setupf("Read %zu bytes: %*s\n", nbytes, (int)nbytes, buf.get());
+            tpf_setupf("Read %zu bytes: %.*s\n", nbytes, (int)nbytes, buf.get());
             auto *buf_ptr = buf.get();
             auto *pipe_ptr = out_pipe.get();
-            pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, size_t written_nbytes) mutable {
+            pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t written_nbytes) mutable {
                 if (errsv != 0) {
                     throw clumsy_error("write error "s + strerror_buf(errsv).msg());
                 }
-                tpf_setupf("Wrote %zu bytes: %*s\n", written_nbytes, (int)written_nbytes, buf.get());
+                tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.get());
                 if (written_nbytes != nbytes) {
                     // TODO: Write all bytes in a loop.
                     // Uh, wouldn't we get an error?
@@ -59,7 +61,7 @@ void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el:
 unique_ptr<el::Pipe> open_pipe(el::Loop *loop, const char *path, int oflag) {
  try_again:
     // TODO: Can't open block?
-    int fd = ::open(path, O_RDWR);
+    int fd = ::open(path, oflag | O_NONBLOCK | O_CLOEXEC);
     if (fd == -1) {
         int errsv = errno;
         if (errsv == EINTR) {

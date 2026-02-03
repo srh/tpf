@@ -40,8 +40,9 @@ std::string format_epoll_events(uint32_t events) {
 
 unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
     {
-        // Assert the FD is a pipe/fifo.  Or a character device, I guess...
+        // Assert the FD is a pipe/fifo.
         // TODO: Pipe could be used with stream sockets, too, almost.
+        // Character devices (or some) seem not to like being edge-triggered; investigate if ever relevant
         struct stat statbuf;
         int stat_res = ::fstat(fd, &statbuf);
         if (stat_res == -1) {
@@ -51,12 +52,10 @@ unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
         tpf_assertf(S_ISFIFO(statbuf.st_mode), "st_mode & S_IFMT is 0%zo", S_IFMT & (size_t)statbuf.st_mode);
     }
 
-    int flags = fcntl(fd, F_GETFD);
-    // TODO: Remove this; there might be more permissible flags in the future.
-    tpf_assert((flags & ~(O_NONBLOCK | O_CLOEXEC)) == 0);
+    int flags = fcntl(fd, F_GETFL);
     if (!(flags & O_NONBLOCK)) {
         flags |= O_NONBLOCK;
-        int res = fcntl(fd, F_SETFD, flags);
+        int res = fcntl(fd, F_SETFL, flags);
         if (res != 0) {
             int errsv = errno;
             throw clumsy_error("fcntl of pipe failed: "s + strerror_buf(errsv).msg());
