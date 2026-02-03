@@ -11,6 +11,7 @@ add_executable(tpf
         el/pipe.cpp
         el/pipe.hpp
         options.hpp
-        options.cpp)
+        options.cpp
+        el/fd.hpp)
 
 target_include_directories(tpf PRIVATE .)

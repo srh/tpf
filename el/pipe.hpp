@@ -6,9 +6,11 @@
 namespace el {
 
 // One end of a pipe.
-struct Pipe : EpollRegistrant {
+class Pipe : private EpollRegistrant {
     // Pipe is meant for use with unique_ptr.
     NONCOPYABLE(Pipe);
+
+private:
     Fd fd_;
     // We start by assuming they're ready for a first read/write.
     bool read_ready_ = true;
@@ -24,6 +26,7 @@ struct Pipe : EpollRegistrant {
     using write_cb_type = std::move_only_function<void (int, ssize_t)>;
     write_cb_type waiting_write_cb_;
 
+public:
     // fd must be an O_NONBLOCK pipe fd
     Pipe(Loop *loop, int fd) : fd_(fd) {
         loop->register_for_epoll(this, fd, EpollInOut::inout());
@@ -38,14 +41,13 @@ struct Pipe : EpollRegistrant {
         tpf_assert(!fd_.has_value());
     }
 
-    void on_update(Loop *loop, uint32_t events) override;
-
     // TODO: These have to be interruptible.
     void read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb);
     void write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb);
     static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (int)>&& close_cb);
 
 private:
+    void on_update(Loop *loop, uint32_t events) override;
     void try_doing_read(Loop *loop, bool avoid_reentrancy);
     void try_doing_write(Loop *loop, bool avoid_reentrancy);
     int deregister_and_close();
