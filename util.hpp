@@ -28,6 +28,14 @@ typ& operator=(typ&&) = default
         } \
     } while (false)
 
+
+#define tpf_assertf(pred, fmt, ...) do { \
+        if (!(pred)) { \
+            fprintf(stderr, "Assertion failed at %s:%d: %s: " fmt "\n", __FILE__, __LINE__, #pred, __VA_ARGS__); \
+            abort(); \
+        } \
+    } while (false)
+
 // TODO: Remove.  Purpose is to avoid leaving stray printfs in initial code setup printfs.
 #define tpf_setupf(...) printf(__VA_ARGS__)
 

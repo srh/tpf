@@ -4,7 +4,8 @@
 #include <string>
 
 struct Options {
-    std::string fifo_path;
+    std::string in_fifo_path;
+    std::string out_fifo_path;
 };
 
 Options parse_command_line(int argc, const char *const *argv);

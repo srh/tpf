@@ -8,35 +8,76 @@
 #include "el/loop.hpp"
 #include "el/pipe.hpp"
 
-void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& pipe, std::move_only_function<void ()>&& on_complete) {
-    // TODO: Implement.
-    el::Pipe::close(loop, std::move(pipe), [MC(on_complete)](int close_errsv) mutable {
-        if (close_errsv != 0) {
-            // TODO: Janky error messaging.
-            tpf_setupf("close() errored on pipe: %s", strerror_buf(close_errsv).msg());
+constexpr size_t TOY_BUF_SIZE = 128;
+
+void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
+
+    std::unique_ptr<char[]> buf(new char[TOY_BUF_SIZE]);
+
+    char *buf_ptr = buf.get();
+    auto *pipe_ptr = in_pipe.get();
+    pipe_ptr->read(loop, buf_ptr, TOY_BUF_SIZE, [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, size_t nbytes) mutable {
+        if (errsv != 0) {
+            throw clumsy_error("read error "s + strerror_buf(errsv).msg());
         }
-        on_complete();
+        if (nbytes == 0) {
+            el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
+                if (close_errsv != 0) {
+                    // TODO: Janky error messaging.
+                    tpf_setupf("close() errored on pipe: %s", strerror_buf(close_errsv).msg());
+                }
+                on_complete();
+            });
+        } else {
+            tpf_setupf("Read %zu bytes: %s\n", nbytes, buf.get());
+            auto *buf_ptr = buf.get();
+            auto *pipe_ptr = out_pipe.get();
+            pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, size_t written_nbytes) mutable {
+                if (errsv != 0) {
+                    throw clumsy_error("write error "s + strerror_buf(errsv).msg());
+                }
+                tpf_setupf("Wrote %zu bytes: %s\n", nbytes, buf.get());
+                if (written_nbytes != nbytes) {
+                    // TODO: Write all bytes in a loop.
+                    // Uh, wouldn't we get an error?
+                    throw clumsy_error("write was short"s);
+                }
+                // TODO: Avoid needing to reallocate buf.
+                // Possibly excessive ->schedule.
+                loop->schedule([MC(on_complete), loop, MC(in_pipe), MC(out_pipe)] mutable {
+                    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
+                });
+            });
+        }
     });
+
+
+    // TODO: Implement.
 }
 
-void go(el::Loop *loop, const Options& opts, std::move_only_function<void ()>&& on_complete) {
-    tpf_setupf("go()...\n");
-
+unique_ptr<el::Pipe> open_pipe(el::Loop *loop, const char *path, int oflag) {
  try_again:
     // TODO: Can't open block?
-    int fd = ::open(opts.fifo_path.c_str(), O_RDWR);
+    int fd = ::open(path, O_RDWR);
     if (fd == -1) {
         int errsv = errno;
         if (errsv == EINTR) {
             goto try_again;
         }
         // TODO: Pardon?  We're in an event loop that doesn't catch exceptions.
-        throw clumsy_error("Error opening file "s + opts.fifo_path + ": " + strerror_buf(errsv).msg());
+        throw clumsy_error("Error opening file "s + path + ": " + strerror_buf(errsv).msg());
     }
 
-    unique_ptr<el::Pipe> pipe = el::make_pipe_from_fd(loop, fd);
+    return el::make_pipe_from_fd(loop, fd);
+}
 
-    echo_on_pipe(loop, std::move(pipe), [MC(on_complete)] mutable {
+void go(el::Loop *loop, const Options& opts, std::move_only_function<void ()>&& on_complete) {
+    tpf_setupf("go()...\n");
+
+    unique_ptr<el::Pipe> in_pipe = open_pipe(loop, opts.in_fifo_path.c_str(), O_RDONLY);
+    unique_ptr<el::Pipe> out_pipe = open_pipe(loop, opts.out_fifo_path.c_str(), O_WRONLY);
+
+    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)] mutable {
         tpf_setupf("Echo completed.\n");
         on_complete();
     });

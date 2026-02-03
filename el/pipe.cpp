@@ -40,7 +40,7 @@ std::string format_epoll_events(uint32_t events) {
 
 unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
     {
-        // Assert the FD is a pipe/fifo.
+        // Assert the FD is a pipe/fifo.  Or a character device, I guess...
         // TODO: Pipe could be used with stream sockets, too, almost.
         struct stat statbuf;
         int stat_res = ::fstat(fd, &statbuf);
@@ -48,7 +48,7 @@ unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
             int errsv = errno;
             throw clumsy_error("fstat of presumed pipe failed: "s + strerror_buf(errsv).msg());
         }
-        tpf_assert(S_ISFIFO(statbuf.st_mode));
+        tpf_assertf(S_ISFIFO(statbuf.st_mode), "st_mode & S_IFMT is 0%zo", S_IFMT & (size_t)statbuf.st_mode);
     }
 
     int flags = fcntl(fd, F_GETFD);
@@ -104,6 +104,7 @@ void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
     read_nbytes_ = nbytes;
 
     if (read_ready_) {
+        // TODO: In this case we should schedule the callback later (if we don't switch to promises).
         try_doing_read(loop);
     }
 }
@@ -158,6 +159,7 @@ void Pipe::write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& wri
     write_nbytes_ = nbytes;
 
     if (write_ready_) {
+        // TODO: In this case we should schedule the callback later (if we don't switch to promises).
         try_doing_write(loop);
     }
 }
