@@ -1,6 +1,7 @@
 #include <cstdio>
 
 #include <fcntl.h>
+#include <span>
 
 #include "options.hpp"
 #include "util.hpp"
@@ -8,15 +9,19 @@
 #include "el/loop.hpp"
 #include "el/pipe.hpp"
 
-constexpr size_t TOY_BUF_SIZE = 128;
+struct Buf {
+    std::unique_ptr<char[]> owned;
+    size_t length = 0;
+    explicit Buf(size_t n) : owned(new char[n]), length(n) { }
+    std::span<char> get() const { return {owned.get(), length}; }
+    char *ptr() const { return owned.get(); }
+};
 
-void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
 
-    std::unique_ptr<char[]> buf(new char[TOY_BUF_SIZE]);
-
-    char *buf_ptr = buf.get();
+void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
+    std::span<char> slice = buf.get();
     auto *pipe_ptr = in_pipe.get();
-    pipe_ptr->read(loop, buf_ptr, TOY_BUF_SIZE, [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t nbytes) mutable {
+    pipe_ptr->read(loop, slice.data(), slice.size(), [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t nbytes) mutable {
         if (errsv != 0) {
             throw clumsy_error("read error "s + strerror_buf(errsv).msg());
         }
@@ -26,36 +31,39 @@ void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el:
                 el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
                     if (close_errsv != 0) {
                         // TODO: Janky error messaging.
-                        tpf_setupf("close() errored on pipe: %s", strerror_buf(close_errsv).msg());
+                        tpf_setupf("close() errored on pipe: %s\n", strerror_buf(close_errsv).msg());
                     }
                     on_complete();
                 });
             });
         } else {
-            tpf_setupf("Read %zu bytes: %.*s\n", nbytes, (int)nbytes, buf.get());
-            auto *buf_ptr = buf.get();
+            tpf_setupf("Read %zu bytes: %.*s\n", nbytes, (int)nbytes, buf.ptr());
+            char *buf_ptr = buf.ptr();
             auto *pipe_ptr = out_pipe.get();
             pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t written_nbytes) mutable {
                 if (errsv != 0) {
                     throw clumsy_error("write error "s + strerror_buf(errsv).msg());
                 }
-                tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.get());
+                tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.ptr());
                 if (written_nbytes != nbytes) {
                     // TODO: Write all bytes in a loop.
                     // Uh, wouldn't we get an error?
                     throw clumsy_error("write was short"s);
                 }
-                // TODO: Avoid needing to reallocate buf.
                 // Possibly excessive ->schedule.
-                loop->schedule([MC(on_complete), loop, MC(in_pipe), MC(out_pipe)] mutable {
-                    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
+                loop->schedule([loop, MC(buf), MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
+                    echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
                 });
             });
         }
     });
+}
 
 
-    // TODO: Implement.
+void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
+    const size_t TOY_BUF_SIZE = 128;
+    Buf buf(TOY_BUF_SIZE);
+    echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
 }
 
 unique_ptr<el::Pipe> open_pipe(el::Loop *loop, const char *path, int oflag) {
