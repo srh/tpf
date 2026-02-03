@@ -46,8 +46,8 @@ struct Pipe : EpollRegistrant {
     static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (int)>&& close_cb);
 
 private:
-    void try_doing_read(Loop *loop);
-    void try_doing_write(Loop *loop);
+    void try_doing_read(Loop *loop, bool avoid_reentrancy);
+    void try_doing_write(Loop *loop, bool avoid_reentrancy);
     int deregister_and_close();
 };
 

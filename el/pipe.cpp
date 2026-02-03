@@ -75,7 +75,7 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
         if (!read_ready_) {
             read_ready_ = true;
             if (waiting_read_cb_ != nullptr) {
-                try_doing_read(loop);
+                try_doing_read(loop, false);
             }
         }
     }
@@ -83,7 +83,7 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
         if (!write_ready_) {
             write_ready_ = true;
             if (waiting_write_cb_) {
-                try_doing_write(loop);
+                try_doing_write(loop, false);
             }
         }
     }
@@ -103,12 +103,11 @@ void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
     read_nbytes_ = nbytes;
 
     if (read_ready_) {
-        // TODO: In this case we should schedule the callback later (if we don't switch to promises).
-        try_doing_read(loop);
+        try_doing_read(loop, true);
     }
 }
 
-void Pipe::try_doing_read(Loop *loop) {
+void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
     tpf_setupf("Pipe::try_doing_read\n");
     tpf_assert(read_ready_);
     tpf_assert(waiting_read_cb_);
@@ -144,7 +143,12 @@ void Pipe::try_doing_read(Loop *loop) {
     cb.swap(waiting_read_cb_);
     read_buf_ = nullptr;
     read_nbytes_ = 0;
-    cb(errsv, res);
+
+    if (avoid_reentrancy) {
+        loop->schedule([MC(cb), errsv, res] mutable { cb(errsv, res); });
+    } else {
+        cb(errsv, res);
+    }
 }
 
 void Pipe::write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb) {
@@ -158,12 +162,11 @@ void Pipe::write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& wri
     write_nbytes_ = nbytes;
 
     if (write_ready_) {
-        // TODO: In this case we should schedule the callback later (if we don't switch to promises).
-        try_doing_write(loop);
+        try_doing_write(loop, true);
     }
 }
 
-void Pipe::try_doing_write(Loop *loop) {
+void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
     tpf_assert(write_ready_);
     tpf_assert(waiting_write_cb_);
     tpf_assert(write_buf_ != nullptr);
@@ -197,7 +200,11 @@ void Pipe::try_doing_write(Loop *loop) {
     write_buf_ = nullptr;
     write_nbytes_ = 0;
 
-    cb(errsv, res);
+    if (avoid_reentrancy) {
+        loop->schedule([MC(cb), errsv, res] mutable { cb(errsv, res); });
+    } else {
+        cb(errsv, res);
+    }
 }
 
 int Pipe::deregister_and_close() {
