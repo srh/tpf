@@ -21,6 +21,7 @@ void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el:
             throw clumsy_error("read error "s + strerror_buf(errsv).msg());
         }
         if (nbytes == 0) {
+            tpf_setupf("EOF.  Ending loop.\n");
             el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
                 if (close_errsv != 0) {
                     // TODO: Janky error messaging.
@@ -29,14 +30,14 @@ void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el:
                 on_complete();
             });
         } else {
-            tpf_setupf("Read %zu bytes: %s\n", nbytes, buf.get());
+            tpf_setupf("Read %zu bytes: %*s\n", nbytes, (int)nbytes, buf.get());
             auto *buf_ptr = buf.get();
             auto *pipe_ptr = out_pipe.get();
             pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, size_t written_nbytes) mutable {
                 if (errsv != 0) {
                     throw clumsy_error("write error "s + strerror_buf(errsv).msg());
                 }
-                tpf_setupf("Wrote %zu bytes: %s\n", nbytes, buf.get());
+                tpf_setupf("Wrote %zu bytes: %*s\n", written_nbytes, (int)written_nbytes, buf.get());
                 if (written_nbytes != nbytes) {
                     // TODO: Write all bytes in a loop.
                     // Uh, wouldn't we get an error?
