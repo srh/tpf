@@ -1,13 +1,13 @@
 #ifndef TPF_EL_LOOP_HPP
 #define TPF_EL_LOOP_HPP
 
-#include <cstdint>
+#include <sys/epoll.h>
 #include <unistd.h>
 
+#include <cstdint>
 #include <utility>
 #include <vector>
-#include <bits/move_only_function.h>
-#include <sys/epoll.h>
+#include <functional>
 
 #include "fd.hpp"
 #include "util.hpp"

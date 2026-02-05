@@ -1,12 +1,13 @@
+#include <fcntl.h>
+
 #include <cstdio>
 #include <expected>
-
-#include <fcntl.h>
 #include <span>
 
 #include "options.hpp"
 #include "util.hpp"
 
+#include "el/future.hpp"
 #include "el/loop.hpp"
 #include "el/pipe.hpp"
 
