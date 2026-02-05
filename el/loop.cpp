@@ -8,16 +8,19 @@
 
 namespace el {
 
-Loop::Loop() {
+expected<int, epoll_create_error> Loop::make_epoll_fd() {
     int cloexec = EPOLL_CLOEXEC;  // TODO: Do we want CLOEXEC?
     int fd = epoll_create1(cloexec);
 
     if (fd == -1) {
         int errsv = errno;
-        throw clumsy_error("epoll_create1 error: "s + strerror_buf(errsv).msg());
+        return unexpected(epoll_create_error{"epoll_create1", errsv});
     }
 
-    epoll_fd_.init(fd);
+    return fd;
+}
+
+Loop::Loop(int epoll_fd) : epoll_fd_{epoll_fd} {
 }
 
 bool Loop::has_stuff_to_do() const {
@@ -28,7 +31,7 @@ bool Loop::has_stuff_to_do() const {
     return (!enqueued_actions_.empty() || !registrants_.empty());
 }
 
-void Loop::register_for_epoll(EpollRegistrant *registrant, int fd, EpollInOut inout) {
+expected<void, epoll_ctl_error> Loop::register_for_epoll(EpollRegistrant *registrant, int fd, EpollInOut inout) {
     tpf_assert(this->epoll_fd_.has_value());
     tpf_assert(registrant->registered_index_ == SIZE_MAX);
     struct epoll_event event = {
@@ -38,15 +41,16 @@ void Loop::register_for_epoll(EpollRegistrant *registrant, int fd, EpollInOut in
     int res = epoll_ctl(epoll_fd_.get(), EPOLL_CTL_ADD, fd, &event);
     if (res != 0) {
         int errsv = errno;
-        throw clumsy_error(strerror_buf(errsv).msg());
+        return unexpected(epoll_ctl_error{"EPOLL_CTL_ADD", errsv});
     }
 
     registrant->loop_ = this;
     registrant->registered_index_ = registrants_.size();
     registrants_.push_back(registrant);
+    return expected<void, epoll_ctl_error>();
 }
 
-void Loop::unregister_for_epoll(EpollRegistrant *registrant, int fd) {
+expected<void, epoll_ctl_error> Loop::unregister_for_epoll(EpollRegistrant *registrant, int fd) {
     tpf_assert(registrant->loop_ != nullptr);
     Loop *loop = registrant->loop_;
     tpf_assert(loop->epoll_fd_.has_value());
@@ -56,7 +60,7 @@ void Loop::unregister_for_epoll(EpollRegistrant *registrant, int fd) {
     int res = epoll_ctl(loop->epoll_fd_.get(), EPOLL_CTL_DEL, fd, &event);
     if (res != 0) {
         int errsv = errno;
-        throw clumsy_error(strerror_buf(errsv).msg());
+        return unexpected(epoll_ctl_error{"EPOLL_CTL_DEL", errsv});
     }
 
     size_t index = registrant->registered_index_;
@@ -66,9 +70,10 @@ void Loop::unregister_for_epoll(EpollRegistrant *registrant, int fd) {
 
     registrant->registered_index_ = SIZE_MAX;
     registrant->loop_ = nullptr;
+    return expected<void, epoll_ctl_error>();
 }
 
-void Loop::handle_wakeups(bool blocking_wait) {
+expected<void, epoll_wait_error> Loop::handle_wakeups(bool blocking_wait) {
     tpf_assert(epoll_fd_.has_value());
 
     const int MAXEVENTS = 2048;
@@ -83,7 +88,7 @@ void Loop::handle_wakeups(bool blocking_wait) {
             // Signal interruption.  res would be 0 if this were a timeout.
             goto try_again;
         }
-        throw clumsy_error("epoll_wait error: "s + strerror_buf(errsv).msg());
+        return unexpected(epoll_wait_error{"epoll_wait", errsv});
     }
 
     for (int i = 0; i < res; ++i) {
@@ -96,15 +101,19 @@ void Loop::handle_wakeups(bool blocking_wait) {
         registrant->on_update(this, event->events);
     }
 
+    return expected<void, epoll_wait_error>();
 }
 
-void Loop::full_step() {
+expected<void, epoll_wait_error> Loop::full_step() {
     tpf_assert(!mid_step_);
     mid_step_ = true;
 
     bool blocking_wait = enqueued_actions_.empty();
 
-    handle_wakeups(blocking_wait);
+    auto result = handle_wakeups(blocking_wait);
+    if (!result.has_value()) {
+        return result;
+    }
 
     decltype(enqueued_actions_) actions;
     actions.swap(enqueued_actions_);
@@ -118,6 +127,7 @@ void Loop::full_step() {
     // TODO(alloc) we destruct actions (and regrow enqueued_actions_).
 
     mid_step_ = false;
+    return expected<void, epoll_wait_error>();
 }
 
 void Loop::schedule(std::move_only_function<void ()>&& action) {

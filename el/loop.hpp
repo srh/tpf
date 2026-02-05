@@ -46,18 +46,19 @@ public:
     // Not movable as long as EpollRegistrant has pointers to us.
     NONCOPYABLE(Loop);
 
-    Loop();
+    [[nodiscard]] static expected<int, epoll_create_error> make_epoll_fd();
+    explicit Loop(int epoll_fd);
 
     bool has_stuff_to_do() const;
-    void full_step();
+    [[nodiscard]] expected<void, epoll_wait_error> full_step();
 
     void schedule(std::move_only_function<void ()>&& action);
 
-    void register_for_epoll(EpollRegistrant *registrant, int fd, EpollInOut inout);
-    static void unregister_for_epoll(EpollRegistrant *registrant, int fd);
+    [[nodiscard]] expected<void, epoll_ctl_error> register_for_epoll(EpollRegistrant *registrant, int fd, EpollInOut inout);
+    [[nodiscard]] static expected<void, epoll_ctl_error> unregister_for_epoll(EpollRegistrant *registrant, int fd);
 
 private:
-    void handle_wakeups(bool blocking_wait);
+    [[nodiscard]] expected<void, epoll_wait_error> handle_wakeups(bool blocking_wait);
 };
 
 }  // namespace el

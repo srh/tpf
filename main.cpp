@@ -1,4 +1,5 @@
 #include <cstdio>
+#include <expected>
 
 #include <fcntl.h>
 #include <span>
@@ -18,37 +19,46 @@ struct Buf {
 };
 
 
-void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
+void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
     std::span<char> slice = buf.get();
     auto *pipe_ptr = in_pipe.get();
-    pipe_ptr->read(loop, slice.data(), slice.size(), [MC(on_complete), MC(buf), loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t nbytes) mutable {
-        if (errsv != 0) {
-            throw clumsy_error("read error "s + strerror_buf(errsv).msg());
+    pipe_ptr->read(loop, slice.data(), slice.size(), [loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error> nbytes) mutable {
+        if (!nbytes.has_value()) {
+            loop->schedule([err = nbytes.error(), MC(on_complete)] mutable { on_complete(unexpected(message_error(err))); });
+            return;
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
             loop->schedule([loop, MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
-                el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](int close_errsv) mutable {
-                    if (close_errsv != 0) {
-                        // TODO: Janky error messaging.
-                        tpf_setupf("close() errored on pipe: %s\n", strerror_buf(close_errsv).msg());
+                el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](expected<close_errsv, epoll_ctl_error> errsv_expec) mutable {
+                    if (!errsv_expec.has_value()) {
+                        on_complete(unexpected(message_error(errsv_expec.error())));
+                        return;
                     }
-                    on_complete();
+                    if (errsv_expec.value().errsv != 0) {
+                        // TODO: Janky error messaging.
+                        tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
+                    }
+                    on_complete(expected<void, message_error>());
                 });
             });
         } else {
-            tpf_setupf("Read %zu bytes: %.*s\n", nbytes, (int)nbytes, buf.ptr());
+            size_t n = nbytes.value();
+            tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
             char *buf_ptr = buf.ptr();
             auto *pipe_ptr = out_pipe.get();
-            pipe_ptr->write(loop, buf_ptr, nbytes, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](int errsv, ssize_t written_nbytes) mutable {
-                if (errsv != 0) {
-                    throw clumsy_error("write error "s + strerror_buf(errsv).msg());
+            pipe_ptr->write(loop, buf_ptr, nbytes.value(), [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error> nbytes_expec) mutable {
+                if (!nbytes_expec.has_value()) {
+                    on_complete(unexpected(message_error{nbytes_expec.error()}));
+                    return;
                 }
+                size_t written_nbytes = static_cast<size_t>(nbytes_expec.value());
                 tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.ptr());
                 if (written_nbytes != nbytes) {
                     // TODO: Write all bytes in a loop.
                     // Uh, wouldn't we get an error?
-                    throw clumsy_error("write was short"s);
+                    on_complete(unexpected(message_error{"write was short"}));
+                    return;
                 }
                 // Possibly excessive ->schedule.
                 loop->schedule([loop, MC(buf), MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
@@ -60,13 +70,13 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
 }
 
 
-void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void ()>&& on_complete) {
+void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
     const size_t TOY_BUF_SIZE = 128;
     Buf buf(TOY_BUF_SIZE);
     echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
 }
 
-unique_ptr<el::Pipe> open_pipe(el::Loop *loop, const char *path, int oflag) {
+expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const char *path, int oflag) {
  try_again:
     // TODO: Can't open block?
     int fd = ::open(path, oflag | O_NONBLOCK | O_CLOEXEC);
@@ -75,41 +85,68 @@ unique_ptr<el::Pipe> open_pipe(el::Loop *loop, const char *path, int oflag) {
         if (errsv == EINTR) {
             goto try_again;
         }
-        // TODO: Pardon?  We're in an event loop that doesn't catch exceptions.
-        throw clumsy_error("Error opening file "s + path + ": " + strerror_buf(errsv).msg());
+        return unexpected(message_error{"Error opening file "s + path + ": " + strerror_buf(errsv).msg()});
     }
 
     return el::make_pipe_from_fd(loop, fd);
 }
 
-void go(el::Loop *loop, const Options& opts, std::move_only_function<void ()>&& on_complete) {
+void go(el::Loop *loop, const Options& opts, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
     tpf_setupf("go()...\n");
 
-    unique_ptr<el::Pipe> in_pipe = open_pipe(loop, opts.in_fifo_path.c_str(), O_RDONLY);
-    unique_ptr<el::Pipe> out_pipe = open_pipe(loop, opts.out_fifo_path.c_str(), O_WRONLY);
+    auto in_pipe_expec = open_pipe(loop, opts.in_fifo_path.c_str(), O_RDONLY);
+    if (!in_pipe_expec.has_value()) {
+        on_complete(unexpected(in_pipe_expec.error()));
+        return;
+    }
+    // Silly(?) experiment using references with .value() on expected<_,_>.
+    unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
+    auto out_pipe_expec = open_pipe(loop, opts.out_fifo_path.c_str(), O_WRONLY);
+    if (!out_pipe_expec.has_value()) {
+        on_complete(unexpected(out_pipe_expec.error()));
+        return;
+    }
+    unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
 
-    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)] mutable {
-        tpf_setupf("Echo completed.\n");
-        on_complete();
+    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)](expected<void, message_error> err) mutable {
+        tpf_setupf("Echo completed...\n");
+        on_complete(std::move(err));
     });
 }
 
 int main(int argc, const char **argv) {
-    Options opts = parse_command_line(argc, argv);
+    expected<Options, message_error> opts_expec = parse_command_line(argc, argv);
+    if (!opts_expec.has_value()) {
+        tpf_setupf("Command line parsing failed: %s\n", opts_expec.error().c_str());
+    }
+    Options& opts = opts_expec.value();
 
     tpf_assert(argc > 0);
     printf("Hello, world!\n");
 
     {
-        el::Loop loop;
+        expected<int, epoll_create_error> fd_expec = el::Loop::make_epoll_fd();
+        if (!fd_expec.has_value()) {
+            tpf_setupf("%s\n", fd_expec.error().make_msg().c_str());
+            return 1;
+        }
+        el::Loop loop(fd_expec.value());
         tpf_setupf("Constructed el::Loop\n");
 
-        loop.schedule([&loop, MC(opts)] mutable { go(&loop, opts, [] {
-            tpf_setupf("Finished.\n");
+        loop.schedule([&loop, MC(opts)] mutable { go(&loop, opts, [](expected<void, message_error> error) {
+            if (error.has_value()) {
+                tpf_setupf("Finished with error: %s\n", error.error().msg().c_str());
+            } else {
+                tpf_setupf("Finished.\n");
+            }
         }); });
 
         while (loop.has_stuff_to_do()) {
-            loop.full_step();
+            expected<void, epoll_wait_error> result = loop.full_step();
+            if (!result.has_value()) {
+                tpf_setupf("Exiting loop early with epoll_wait_error: %s\n", result.error().make_msg().c_str());
+                return 1;
+            }
         }
     }
 

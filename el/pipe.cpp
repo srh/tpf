@@ -2,6 +2,7 @@
 
 #include <cinttypes>
 #include <fcntl.h>
+#include <format>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -38,7 +39,7 @@ std::string format_epoll_events(uint32_t events) {
 }
 
 
-unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
+expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) {
     {
         // Assert the FD is a pipe/fifo.
         // TODO: Pipe could be used with stream sockets, too, almost.
@@ -47,9 +48,11 @@ unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
         int stat_res = ::fstat(fd, &statbuf);
         if (stat_res == -1) {
             int errsv = errno;
-            throw clumsy_error("fstat of presumed pipe failed: "s + strerror_buf(errsv).msg());
+            return unexpected(message_error("fstat of presumed pipe failed: "s + strerror_buf(errsv).msg()));
         }
-        tpf_assertf(S_ISFIFO(statbuf.st_mode), "st_mode & S_IFMT is 0%zo", S_IFMT & (size_t)statbuf.st_mode);
+        if (!S_ISFIFO(statbuf.st_mode)) {
+            return unexpected(message_error{std::format("st_mode & S_IFMT is 0{:o}", S_IFMT & (size_t)statbuf.st_mode)});
+        }
     }
 
     int flags = fcntl(fd, F_GETFL);
@@ -58,11 +61,10 @@ unique_ptr<Pipe> make_pipe_from_fd(Loop *loop, int fd) {
         int res = fcntl(fd, F_SETFL, flags);
         if (res != 0) {
             int errsv = errno;
-            throw clumsy_error("fcntl of pipe failed: "s + strerror_buf(errsv).msg());
+            return unexpected(message_error("fcntl of pipe failed: "s + strerror_buf(errsv).msg()));
         }
     }
-    auto ptr = make_unique<Pipe>(loop, fd);
-    return ptr;
+    return make_unique<Pipe>(loop, fd);
 }
 
 void Pipe::on_update(Loop *loop, uint32_t events) {
@@ -114,9 +116,9 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
     tpf_assert(read_buf_ != nullptr);
  try_again:
     ssize_t res = ::read(fd_.get(), read_buf_, read_nbytes_);
-    int errsv;
+    expected<ssize_t, read_error> nbytes_expec;
     if (res == -1) {
-        errsv = errno;
+        int errsv = errno;
         tpf_setupf("Pipe::read: read returns %zd, errno = %d\n", res, errsv);
         if (errsv == EINTR) {
             goto try_again;
@@ -125,10 +127,10 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
         if (errsv == EAGAIN || errsv == EWOULDBLOCK) {
             return;
         }
+        nbytes_expec = unexpected(read_error{"read", errsv});
     } else {
         tpf_setupf("Pipe::read: read returns %zd\n", res);
         // Successful read case...
-        errsv = 0;
         if (__linux__) {
             // True for pipes: we don't need to read until EAGAIN.
             read_ready_ = (res == read_nbytes_);
@@ -137,6 +139,7 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
             // Actually, revisit this with other unices.
             static_assert(__linux__);
         }
+        nbytes_expec.emplace(res);
     }
 
     read_cb_type cb;
@@ -145,9 +148,9 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
     read_nbytes_ = 0;
 
     if (avoid_reentrancy) {
-        loop->schedule([MC(cb), errsv, res] mutable { cb(errsv, res); });
+        loop->schedule([MC(cb), nbytes_expec] mutable { cb(nbytes_expec); });
     } else {
-        cb(errsv, res);
+        cb(nbytes_expec);
     }
 }
 
@@ -172,9 +175,9 @@ void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
     tpf_assert(write_buf_ != nullptr);
  try_again:
     ssize_t res = ::write(fd_.get(), write_buf_, write_nbytes_);
-    int errsv;
+    expected<ssize_t, write_error> nbytes_expec;
     if (res == -1) {
-        errsv = errno;
+        int errsv = errno;
         if (errsv == EINTR) {
             goto try_again;
         }
@@ -182,9 +185,9 @@ void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
         if (errsv == EAGAIN || errsv == EWOULDBLOCK) {
             return;
         }
+        nbytes_expec = unexpected(write_error{"write", errsv});
     } else {
         // Successful write case...
-        errsv = 0;
         if (__linux__) {
             // True for pipes: We don't need to write until EAGAIN.
             write_ready_ = (res == write_nbytes_);
@@ -193,6 +196,7 @@ void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
             // unices.
             static_assert(__linux__);
         }
+        nbytes_expec.emplace(res);
     }
 
     write_cb_type cb;
@@ -201,36 +205,38 @@ void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
     write_nbytes_ = 0;
 
     if (avoid_reentrancy) {
-        loop->schedule([MC(cb), errsv, res] mutable { cb(errsv, res); });
+        loop->schedule([MC(cb), nbytes_expec] mutable { cb(nbytes_expec); });
     } else {
-        cb(errsv, res);
+        cb(nbytes_expec);
     }
 }
 
-int Pipe::deregister_and_close() {
+expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
     int fd = std::move(fd_).release();
-    loop_->unregister_for_epoll(this, fd);
+    auto result = loop_->unregister_for_epoll(this, fd);
+    if (result.has_value()) {
+        // TODO: Is close non-blocking?
+        int res = ::close(fd);
+        int errsv = res == 0 ? 0 : errno;
 
-    // TODO: Is close non-blocking?
-    int res = ::close(fd);
-    int errsv = res == 0 ? 0 : errno;
-
-    static_assert(__linux__, "Linux-specific EINTR behavior here.");
-    return errsv;
+        static_assert(__linux__, "Linux-specific EINTR behavior here.");
+        return close_errsv{errsv};
+    } else {
+        return unexpected(result.error());
+    }
 }
 
-void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (int)>&& close_cb) {
+void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb) {
     tpf_assert(!pipe->waiting_read_cb_);
     tpf_assert(!pipe->waiting_write_cb_);
     tpf_assert(loop == pipe->loop_);
 
-    int errsv = pipe->deregister_and_close();
+    auto errsv_expec = pipe->deregister_and_close();
 
     // Destruct pipe before callback.
     pipe.reset();
 
-
-    loop->schedule([MC(close_cb), errsv] mutable { close_cb(errsv); });
+    loop->schedule([MC(close_cb), errsv_expec] mutable { close_cb(errsv_expec); });
 }
 
 }  // namespace el
