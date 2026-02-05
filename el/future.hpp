@@ -37,6 +37,10 @@ public:
 
     template <class U>
     future<U> then(std::move_only_function<future<U> (T&)> fn);
+
+    bool has_value() const {
+        return value_.has_value();
+    }
 };
 
 
@@ -127,6 +131,39 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)> fn) {
         }
     };
     return fut;
+}
+
+template <class T>
+void check_evaled(size_t *i, future<T> *fut, bool *seen_ready) {
+    // TODO: We pay with an extra conditional check to return the _first_ ready future
+    // instead of the last ready future.  Why?
+    if (*seen_ready) {
+        return;
+    }
+    tpf_assert(!fut->attached_callback_);
+    if (fut->ready()) {
+        *seen_ready = true;
+        return;
+    }
+    // Element at index i (and all before) are not ready.
+    ++*i;
+}
+
+template <class... Ts>
+size_t wait_any(future<Ts>&... futs) {
+    // So we have a bunch of futures.
+    size_t i = 0;
+    bool seen_ready = false;
+    char arr[] = { (check_evaled(&i, &futs, &seen_ready))..., '\0' };
+    if (seen_ready) {
+        return i;
+    }
+
+    // So we have a bunch of futures, and none of them are ready.
+
+    // We need some change to futures so we can attach ready notification instead of
+    // simply a callback that receives and consumes the value.
+    throw "TODO: Implement.";
 }
 
 
