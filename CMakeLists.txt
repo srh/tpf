@@ -13,6 +13,7 @@ add_executable(tpf
         options.hpp
         options.cpp
         el/fd.hpp
-        el/future.hpp)
+        el/future.hpp
+        el/intrusive_list.hpp)
 
 target_include_directories(tpf PRIVATE .)

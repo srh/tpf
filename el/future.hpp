@@ -4,6 +4,7 @@
 #include <functional>
 #include <optional>
 
+#include "el/intrusive_list.hpp"
 #include "util.hpp"
 
 namespace el {
