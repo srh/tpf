@@ -44,7 +44,6 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
                 });
             });
         } else {
-            size_t n = nbytes.value();
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
             char *buf_ptr = buf.ptr();
             auto *pipe_ptr = out_pipe.get();
