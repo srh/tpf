@@ -34,7 +34,7 @@ typ& operator=(typ&&) = default
 
 #define tpf_assertf(pred, fmt, ...) do { \
         if (!(pred)) { \
-            fprintf(stderr, "Assertion failed at %s:%d: %s: " fmt "\n", __FILE__, __LINE__, #pred, __VA_ARGS__); \
+            fprintf(stderr, "Assertion failed at %s:%d: %s: " fmt "\n", __FILE__, __LINE__, #pred, ##__VA_ARGS__); \
             abort(); \
         } \
     } while (false)

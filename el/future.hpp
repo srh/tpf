@@ -15,91 +15,129 @@ class future;
 template <class T>
 class promise;
 
+
 template <class T>
 class future {
     NONCOPYABLE(future);
     promise<T> *matching_promise_ = nullptr;
 
-    // TODO: Be fancier about attached callback type.
-
     std::optional<T> value_;
-    using attached_callback_type = std::move_only_function<void (T&)>;
-    attached_callback_type attached_callback_;
 
     friend class promise<T>;
 
-    explicit future(promise<T> *prom) : matching_promise_(prom), value_{}, attached_callback_{} {
-        tpf_assert(prom->our_future_ == nullptr);
-        prom->our_future_ = this;
+    explicit future(promise<T> *prom) : matching_promise_(prom), value_{} {
+        tpf_assert(prom->matching_future_ == nullptr);
+        prom->matching_future_ = this;
     }
 
 public:
-    future() : matching_promise_{nullptr}, value_{}, attached_callback_{} {}
+    future() : matching_promise_{nullptr}, value_{} {}
+
+    future(future&& other);
+    // Asserts we are in a default-constructed state.
+    future& operator=(future&& other);
 
     template <class U>
-    future<U> then(std::move_only_function<future<U> (T&)> fn);
+    future<U> then(std::move_only_function<future<U> (T&)>&& fn) &&;
 
     bool has_value() const {
         return value_.has_value();
+    }
+
+    bool is_default_constructed() const {
+        return matching_promise_ == nullptr && !value_.has_value();
     }
 };
 
 
 template <class T>
 class promise {
+    friend class future<T>;
     NONCOPYABLE(promise);
-    future<T> *our_future_ = nullptr;
+    // has backpointer that needs to be maintained
+    future<T> *matching_future_ = nullptr;
+    // has no backpointer
+    using attached_callback_type = std::move_only_function<void (T&)>;
+    attached_callback_type attached_callback_;
 
-    promise(promise&& other) : our_future_(other.our_future_) {
-        if (our_future_ != nullptr) {
-            our_future_->matching_promise_ = this;
+    promise(promise&& other) : matching_future_(other.matching_future_), attached_callback_(std::move(other.attached_callback_)) {
+        if (matching_future_ != nullptr) {
+            matching_future_->matching_promise_ = this;
         }
-        other.our_future_ = nullptr;
+        other.matching_future_ = nullptr;
     }
 
+    // Asserts we are in a default-constructed state
     promise& operator=(promise&& other) {
-        if (&other == this) {
-            return *this;
-        }
-        tpf_assert(our_future_ == nullptr);
-        our_future_ = other.our_future_;
-        if (our_future_ != nullptr) {
-            our_future_->matching_promise_ = this;
+        tpf_assert(matching_future_ == nullptr && !attached_callback_);
+        matching_future_ = other.matching_future_;
+        other.matching_future_ = nullptr;
+        attached_callback_.swap(other.attached_callback_);
+        if (matching_future_ != nullptr) {
+            matching_future_->matching_promise_ = this;
         }
         return *this;
     }
 
     ~promise() {
-        tpf_assert(our_future_ == nullptr);
+        tpf_assert(matching_future_ == nullptr);
     }
 
+    // Maybe this should even be marked &&
     void supply_value_and_detach(T&& value) {
-        tpf_assert(our_future_ != nullptr);
-        future<T> *fut = our_future_;
-        fut->value_ = std::move(value);
-        fut->matching_promise_ = nullptr;
-        our_future_ = nullptr;
-        if (fut->attached_callback_) {
-            typename future<T>::attached_callback_type cb = std::move(fut->attached_callback_);
-            cb(fut->value_);
+        if (matching_future_ != nullptr) {
+            future<T> *fut = matching_future_;
+            fut->value_ = std::move(value);
+            fut->matching_promise_ = nullptr;
+            matching_future_ = nullptr;
+        } else {
+            tpf_assertf(attached_callback_, "No attached callback -- a promise was leaked");
+            attached_callback_type cb;
+            cb.swap(attached_callback_);
+            cb(value);
         }
     }
 };
 
+template <class T>
+future<T>::future(future&& other) : matching_promise_(other.matching_promise_), value_{} {
+    value_.swap(other.value_);
+    other.matching_promise_ = nullptr;
+    if (matching_promise_ != nullptr) {
+        matching_promise_->matching_future_ = this;
+    }
+}
+
+template <class T>
+future<T>& future<T>::operator=(future&& other) {
+    tpf_assert(is_default_constructed());
+
+    value_.swap(other.value_);
+    matching_promise_ = other.matching_promise_;
+    other.matching_promise_ = nullptr;
+    if (matching_promise_ != nullptr) {
+        matching_promise_->matching_future_ = this;
+    }
+    return *this;
+}
 
 template <class T>
 template <class U>
-future<U> future<T>::then(std::move_only_function<future<U> (T&)> fn) {
-    tpf_assert(!attached_callback_);
+future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
+    tpf_assert(!is_default_constructed());
     if (value_.has_value()) {
         std::move_only_function<future<U> (T&)> tmp;
         tmp.swap(fn);
         return tmp(*value_);
     }
+    tpf_assert(matching_promise_ != nullptr);
     promise<U> prom;
     future<U> fut(&prom);
 
-    attached_callback_ = [prom = std::move(prom), fn = std::move(fn)](T& value) mutable {
+    promise<T> *our_prom = matching_promise_;
+
+    tpf_assert(!our_prom->attached_callback_);
+    our_prom->attached_callback_ = [prom = std::move(prom), fn = std::move(fn)](T& value) mutable {
         std::move_only_function<future<U> (T&)> tmp;
         tmp.swap(fn);
         future<U> res = tmp(value);
@@ -119,25 +157,28 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)> fn) {
             // Splice fut's promise pointer (where "fut" is wherever the local
             // variable 'fut' above got moved to) to point to the new promise (and
             // vice versa).
-            future<U> *prom_fut = prom.our_future_;
+            future<U> *prom_fut = prom.matching_future_;
             tpf_assert(prom_fut != nullptr);
             tpf_assert(prom_fut->matching_promise_ == &prom);
             prom_fut->matching_promise_ = nullptr;
-            prom.our_future_ = nullptr;
+            prom.matching_future_ = nullptr;
 
             promise<U> *res_promise = res.matching_promise_;
             prom_fut->matching_promise_ = res_promise;
             res.matching_promise_ = nullptr;
-            res_promise->our_future_ = prom_fut;
+            res_promise->matching_future_ = prom_fut;
         }
     };
+    our_prom->matching_future_ = nullptr;
+    matching_promise_ = nullptr;
+    tpf_assert(is_default_constructed());
     return fut;
 }
 
 template <class T>
 void check_evaled(size_t *i, future<T> *fut, bool *seen_ready) {
     // TODO: We pay with an extra conditional check to return the _first_ ready future
-    // instead of the last ready future.  Why?
+    // instead of the last ready future.  It's not a guaranteed semantic (yet?).
     if (*seen_ready) {
         return;
     }
