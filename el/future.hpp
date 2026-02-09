@@ -25,8 +25,8 @@ public:
     virtual void future_completed() = 0;
     void unregister_self() {
         // Should this be an assertion?
-        if (!intrusive_list_node::is_detached()) {
-            intrusive_list_node::detach();
+        if (!is_detached()) {
+            detach();
         }
     }
 protected:
