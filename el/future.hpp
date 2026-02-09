@@ -25,10 +25,17 @@ class promise;
 class future_notify : public intrusive_list_node {
 public:
     virtual void future_completed() = 0;
+    void unregister_self() {
+        // Should this be an assertion?
+        if (!intrusive_list_node::is_detached()) {
+            intrusive_list_node::detach();
+        }
+    }
 };
 
 template <class T>
 class future {
+private:
     NONCOPYABLE(future);
     promise<T> *matching_promise_ = nullptr;
 
@@ -40,25 +47,30 @@ class future {
 
     friend class promise<T>;
 
+
+    void notify_and_detach_completions() {
+        intrusive_list<future_notify> notifies = std::move(completion_notifies_);
+        intrusive_list_node *self = notifies.self();
+        intrusive_list_node *node = self->next();
+        while (node != self) {
+            node->detach();
+            static_cast<future_notify *>(node)->future_completed();
+            // Use self->next() over and over again to tolerate future_completed callbacks
+            // causing other notifies to self-detach.  (Which would be weird; instead
+            // maybe we should assert that nothing "weird" is going on.)
+            node = self->next();
+        }
+    }
+
+public:
     explicit future(promise<T> *prom) : matching_promise_(prom), value_{} {
         tpf_assert(prom->matching_future_ == nullptr);
         prom->matching_future_ = this;
     }
 
-    void notify_and_detach_completions() {
-        intrusive_list_node *self = completion_notifies_.self();
-        intrusive_list_node *node = self->next();
-        while (node != self) {
-            intrusive_list_node *next = node->next();
-            node->detach_self();
-            static_assert(std::is_same_v<decltype(completion_notifies_), intrusive_list<future_notify>>);
-            static_cast<future_notify *>(node)->future_completed();
-            node = next;
-        }
-    }
+    future() : matching_promise_{nullptr}, completion_notifies_{}, value_{} {}
 
-public:
-    future() : matching_promise_{nullptr}, value_{} {}
+    future(T&& value) : matching_promise_{nullptr}, completion_notifies_{}, value_{std::move(value)} {}
 
     future(future&& other);
     // Asserts we are in a default-constructed state.
@@ -87,6 +99,9 @@ class promise {
     // has no backpointer
     using attached_callback_type = std::move_only_function<void (T&)>;
     attached_callback_type attached_callback_;
+
+public:
+    promise() : matching_future_(nullptr), attached_callback_{} {}
 
     promise(promise&& other) : matching_future_(other.matching_future_), attached_callback_(std::move(other.attached_callback_)) {
         if (matching_future_ != nullptr) {
@@ -205,6 +220,7 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
     return fut;
 }
 
+// TODO: Maybe, move wait_any to a separate file.
 template <class T>
 void check_evaled(size_t *i, future<T> *fut, bool *seen_ready) {
     // TODO: We pay with an extra conditional check to return the _first_ ready future
@@ -221,24 +237,99 @@ void check_evaled(size_t *i, future<T> *fut, bool *seen_ready) {
     ++*i;
 }
 
+template <size_t N>
+struct wait_any_state;
+
+template <size_t N>
+struct wait_any_notify : public future_notify {
+    NONCOPYABLE(wait_any_notify);
+    wait_any_notify() = default;
+    wait_any_state<N> *state = nullptr;
+    void future_completed() override;
+};
+
+template <size_t N>
+struct wait_any_state {
+    NONCOPYABLE(wait_any_state);
+    wait_any_state() : value_supplied(false), prom{} {
+        for (size_t i = 0; i < N; ++i) {
+            notifies[i].state = this;
+        }
+    }
+    bool value_supplied = false;
+    promise<size_t> prom;
+    wait_any_notify<N> notifies[N];
+    void notify_complete(wait_any_notify<N> *notify) {
+        tpf_assert(notify >= notifies + 0 && notify < notifies + N);
+        size_t index = notify - notifies;
+        tpf_assert(index < N);  // No funny offsets
+
+        for (size_t i = 0; i < index; ++i) {
+            notifies[i].unregister_self();
+        }
+        for (size_t i = index + 1; i < N; ++i) {
+            notifies[i].unregister_self();
+        }
+
+        if (!value_supplied) {
+            value_supplied = true;
+            prom.supply_value_and_detach(std::move(index));
+        }
+    }
+};
+
+template <size_t N>
+void wait_any_notify<N>::future_completed() {
+    state->notify_complete(this);
+}
+
+template <class T0>
+future<size_t> await_notifications(future<T0>& fut0) {
+    auto state = make_unique<wait_any_state<2>>();
+    future<size_t> fut(&state->prom);
+
+    fut0.register_notify(&state->notifies[0]);
+
+    return fut;
+}
+
+template <class T0, class T1>
+future<size_t> await_notifications(future<T0>& fut0, future<T1>& fut1) {
+    auto state = make_unique<wait_any_state<2>>();
+    future<size_t> fut(&state->prom);
+
+    fut0.register_notify(&state->notifies[0]);
+    fut1.register_notify(&state->notifies[1]);
+
+    return fut;
+}
+
+template <class T0, class T1, class T2>
+future<size_t> await_notifications(future<T0>& fut0, future<T1>& fut1, future<T2>& fut2) {
+    auto state = make_unique<wait_any_state<2>>();
+    future<size_t> fut(&state->prom);
+
+    // TODO: Use variadic template (once this is used, tested, stabilized).
+    fut0.register_notify(&state->notifies[0]);
+    fut1.register_notify(&state->notifies[1]);
+    fut2.register_notify(&state->notifies[2]);
+
+    return fut;
+}
+
 template <class... Ts>
-size_t wait_any(future<Ts>&... futs) {
+future<size_t> wait_any(future<Ts>&... futs) {
+    static_assert(sizeof...(Ts) > 0);
     // So we have a bunch of futures.
     size_t i = 0;
     bool seen_ready = false;
     char arr[] = { (check_evaled(&i, &futs, &seen_ready))..., '\0' };
     if (seen_ready) {
-        return i;
+        return future<size_t>(std::move(i));
     }
 
     // So we have a bunch of futures, and none of them are ready.
-
-
-
-
-    // We need some change to futures so we can attach ready notification instead of
-    // simply a callback that receives and consumes the value.
-    throw "TODO: Implement.";
+    return await_notifications(futs...);
 }
 
 

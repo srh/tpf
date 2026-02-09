@@ -45,7 +45,8 @@ public:
     intrusive_list_node *next() {
         return next_;
     }
-    void detach_self() {
+    void detach() {
+        tpf_assert(!is_detached());
         prev_->next_ = next_;
         next_->prev_ = prev_;
         prev_ = nullptr;
