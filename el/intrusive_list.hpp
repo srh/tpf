@@ -11,22 +11,27 @@ class intrusive_list_node {
     template <class T>
     friend class intrusive_list;
 
-    intrusive_list_node *prev_ = nullptr;
+    // A "detached" node has its pointers set to nullptr.  Another choice might be to make
+    // it point at self when detached.
     intrusive_list_node *next_ = nullptr;
+    intrusive_list_node *prev_ = nullptr;
 
     bool is_properly_detached() const {
-        return prev_ == nullptr && next_ == nullptr;
+        return next_ == nullptr && prev_ == nullptr;
     }
 
 protected:
     intrusive_list_node() = default;
     intrusive_list_node(intrusive_list_node&& other) noexcept {
-        // This uses aliasing to handle empty list case...
         if (other.next_ != nullptr) {
             other.next_->prev_ = this;
             other.prev_->next_ = this;
             next_ = other.next_;
             prev_ = other.prev_;
+            // Note that intrusive_list(intrusive_list&&) which avoids this ctor has
+            // different behavior.
+            other.next_ = nullptr;
+            other.prev_ = nullptr;
         }
     }
     void operator=(intrusive_list_node&) = delete;
@@ -37,8 +42,8 @@ protected:
         tpf_assert(prev->next_ == node);
         prev->next_ = this;
         node->prev_ = this;
-        prev_ = prev;
         next_ = node;
+        prev_ = prev;
     }
 
 public:
@@ -47,14 +52,14 @@ public:
     }
     void detach() {
         tpf_assert(!is_detached());
-        prev_->next_ = next_;
         next_->prev_ = prev_;
-        prev_ = nullptr;
+        prev_->next_ = next_;
         next_ = nullptr;
+        prev_ = nullptr;
     }
 
     bool is_detached() const {
-        return prev_ == nullptr;
+        return next_ == nullptr;
     }
 };
 
@@ -66,14 +71,22 @@ public:
     using element_pointer_type = T *;
     NONCOPYABLE(intrusive_list);
     intrusive_list() : intrusive_list_node{} {
-        prev_ = this;
         next_ = this;
+        prev_ = this;
     }
-    intrusive_list(intrusive_list&& other) {
+    intrusive_list(intrusive_list&& other) : intrusive_list_node() {
+        // Careful: This is "slick" in how it handles the empty list case.
         other.next_->prev_ = this;
         other.prev_->next_ = this;
+        // Empty list case: Here other.next_ and other.prev_ point at this.
+
         next_ = other.next_;
         prev_ = other.prev_;
+        // Empty list case: next_ and prev_ point at this (because other.next_ got updated first).
+
+        // Unlike intrusive_list_node(intrusive_list_node&&), we reset other to point at self.
+        other.next_ = &other;
+        other.prev_ = &other;
     }
     void operator=(intrusive_list&& other) = delete;
 
@@ -84,7 +97,7 @@ public:
         return this;
     }
     bool empty() const {
-        return prev_ == this;
+        return next_ == this;
     }
     void push(T *elem) {
         intrusive_list_node *node = elem;
