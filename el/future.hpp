@@ -9,10 +9,8 @@
 
 
 
-/* Should we put completion_notifies_ on the promise or on the future as we have it now?  It's
-a question of performance optimization.  (Other potential optimizations: Maybe it
-could be a singular pointer or a singly linked intrusive list or single-pointer
-root node, instead of the basic cyclic intrusive_list we have now.) */
+/* Should we put completion_notifies_ on the promise or on the future as we have it now?
+ * Should we make completion_notifies_ a single pointer? */
 
 namespace el {
 
