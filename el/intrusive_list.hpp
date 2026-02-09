@@ -22,6 +22,10 @@ class intrusive_list_node {
 
 protected:
     intrusive_list_node() = default;
+    ~intrusive_list_node() {
+        // Unclear if we should assert or if we should just detach self upon destruction.
+        tpf_assert(is_properly_detached());
+    }
     intrusive_list_node(intrusive_list_node&& other) noexcept {
         if (other.next_ != nullptr) {
             other.next_->prev_ = this;
@@ -73,6 +77,12 @@ public:
     intrusive_list() : intrusive_list_node{} {
         next_ = this;
         prev_ = this;
+    }
+    ~intrusive_list() {
+        tpf_assert(empty());
+        // set to nullptr so that ~intrusive_list_node superclass can assert the node is detached.
+        next_ = nullptr;
+        prev_ = nullptr;
     }
     intrusive_list(intrusive_list&& other) : intrusive_list_node() {
         // Careful: This is "slick" in how it handles the empty list case.

@@ -31,6 +31,8 @@ public:
             intrusive_list_node::detach();
         }
     }
+protected:
+    ~future_notify() = default;
 };
 
 template <class T>

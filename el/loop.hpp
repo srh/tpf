@@ -22,6 +22,8 @@ protected:
     Loop *loop_ = nullptr;
     size_t registered_index_ = SIZE_MAX;
     virtual void on_update(Loop *loop, uint32_t events) = 0;
+protected:
+    ~EpollRegistrant() = default;
 };
 
 struct EpollInOut {
