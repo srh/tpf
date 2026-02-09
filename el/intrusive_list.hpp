@@ -72,7 +72,6 @@ public:
 template <class T>
 class intrusive_list : private intrusive_list_node {
 public:
-    using element_pointer_type = T *;
     NONCOPYABLE(intrusive_list);
     intrusive_list() : intrusive_list_node{} {
         next_ = this;
