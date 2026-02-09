@@ -7,6 +7,13 @@
 #include "el/intrusive_list.hpp"
 #include "util.hpp"
 
+
+
+/* Should we put completion_notifies_ on the promise or on the future as we have it now?  It's
+a question of performance optimization.  (Other potential optimizations: Maybe it
+could be a singular pointer or a singly linked intrusive list or single-pointer
+root node, instead of the basic cyclic intrusive_list we have now.) */
+
 namespace el {
 
 template <class T>
@@ -15,11 +22,19 @@ class future;
 template <class T>
 class promise;
 
+class future_notify : public intrusive_list_node {
+public:
+    virtual void future_completed() = 0;
+};
 
 template <class T>
 class future {
     NONCOPYABLE(future);
     promise<T> *matching_promise_ = nullptr;
+
+    // Only non-empty when matching_promise_ is non-null.  So, we couldn't wait for
+    // completion of a future which is then attached to with .then.
+    intrusive_list<future_notify> completion_notifies_;
 
     std::optional<T> value_;
 
@@ -28,6 +43,18 @@ class future {
     explicit future(promise<T> *prom) : matching_promise_(prom), value_{} {
         tpf_assert(prom->matching_future_ == nullptr);
         prom->matching_future_ = this;
+    }
+
+    void notify_and_detach_completions() {
+        intrusive_list_node *self = completion_notifies_.self();
+        intrusive_list_node *node = self->next();
+        while (node != self) {
+            intrusive_list_node *next = node->next();
+            node->detach_self();
+            static_assert(std::is_same_v<decltype(completion_notifies_), intrusive_list<future_notify>>);
+            static_cast<future_notify *>(node)->future_completed();
+            node = next;
+        }
     }
 
 public:
@@ -56,6 +83,7 @@ class promise {
     NONCOPYABLE(promise);
     // has backpointer that needs to be maintained
     future<T> *matching_future_ = nullptr;
+
     // has no backpointer
     using attached_callback_type = std::move_only_function<void (T&)>;
     attached_callback_type attached_callback_;
@@ -90,6 +118,8 @@ class promise {
             fut->value_ = std::move(value);
             fut->matching_promise_ = nullptr;
             matching_future_ = nullptr;
+
+            fut->notify_and_detach_completions();
         } else {
             tpf_assertf(attached_callback_, "No attached callback -- a promise was leaked");
             attached_callback_type cb;
@@ -202,6 +232,9 @@ size_t wait_any(future<Ts>&... futs) {
     }
 
     // So we have a bunch of futures, and none of them are ready.
+
+
+
 
     // We need some change to futures so we can attach ready notification instead of
     // simply a callback that receives and consumes the value.

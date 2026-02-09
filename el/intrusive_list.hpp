@@ -5,12 +5,12 @@
 
 namespace el {
 
+// A node in a cyclic doubly linked list.
 class intrusive_list_node {
     NONCOPYABLE(intrusive_list_node);
     template <class T>
     friend class intrusive_list;
-    // Null for detached list element nodes -- but set to (this, this) for intrusive_list
-    // (which is a cyclic doubly linked list).
+
     intrusive_list_node *prev_ = nullptr;
     intrusive_list_node *next_ = nullptr;
 
@@ -41,7 +41,6 @@ protected:
         next_ = node;
     }
 
-
 public:
     intrusive_list_node *next() {
         return next_;
@@ -58,10 +57,12 @@ public:
     }
 };
 
+// A doubly linked intrusive linked list.  Is cyclic.
 // T* is the element type, T being a subclass of intrusive_list_node.
 template <class T>
 class intrusive_list : private intrusive_list_node {
 public:
+    using element_pointer_type = T *;
     NONCOPYABLE(intrusive_list);
     intrusive_list() : intrusive_list_node{} {
         prev_ = this;
