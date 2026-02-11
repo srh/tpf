@@ -133,9 +133,9 @@ int main(int argc, const char **argv) {
         el::Loop loop(fd_expec.value());
         tpf_setupf("Constructed el::Loop\n");
 
-        loop.schedule([&loop, MC(opts)] mutable { go(&loop, opts, [](expected<void, message_error> error) {
-            if (error.has_value()) {
-                tpf_setupf("Finished with error: %s\n", error.error().msg().c_str());
+        loop.schedule([&loop, MC(opts)] mutable { go(&loop, opts, [](expected<void, message_error> void_expec) {
+            if (!void_expec.has_value()) {
+                tpf_setupf("Finished with error: %s\n", void_expec.error().msg().c_str());
             } else {
                 tpf_setupf("Finished.\n");
             }
