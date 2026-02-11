@@ -25,6 +25,10 @@ private:
     size_t write_nbytes_ = 0;
     promise<expected<ssize_t, write_error>> write_promise_;
 
+    // TODO: This is icky, very hackish.
+    // TODO: Could point at a thread-local instead of nullptr, avoid conditional check.
+    bool *destruct_pointer_ = nullptr;
+
 public:
     // fd must be an O_NONBLOCK pipe fd
     Pipe(Loop *loop, int fd) : fd_(fd) {
@@ -36,6 +40,11 @@ public:
     }
 
     ~Pipe() noexcept(false) {
+        if (destruct_pointer_ != nullptr) {
+            tpf_assert(!*destruct_pointer_);
+            *destruct_pointer_ = true;
+            destruct_pointer_ = nullptr;
+        }
         // TODO: Could we cleanly cancel pending read and write operations?
         if (fd_.has_value()) {
             expected<close_errsv, epoll_ctl_error> result = deregister_and_close();

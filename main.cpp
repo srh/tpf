@@ -20,7 +20,7 @@ struct Buf {
 };
 
 
-void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
+void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>&&)>&& on_complete) {
     std::span<char> slice = buf.get();
     auto *pipe_ptr = in_pipe.get();
     auto fut = pipe_ptr->read(slice.data(), slice.size());
@@ -31,18 +31,19 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            auto close_fut = el::Pipe::close(std::move(in_pipe));
-            std::move(close_fut).wait_with_callback_schedule_if_immediate(loop, [MC(on_complete)](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
+            el::future<expected<close_errsv, epoll_ctl_error>> close_fut = el::Pipe::close(std::move(in_pipe));
+            std::move_only_function<el::future<expected<void, message_error>>(expected<close_errsv, epoll_ctl_error>&&)> lam = [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
                 if (!errsv_expec.has_value()) {
-                    on_complete(unexpected(message_error(errsv_expec.error())));
-                    return;
+                    return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
                 }
                 if (errsv_expec.value().errsv != 0) {
                     // TODO: Janky error messaging.
                     tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
                 }
-                on_complete(expected<void, message_error>());
-            });
+                return el::future{expected<void, message_error>()};
+            };
+            el::future<expected<void, message_error>> complete_fut = std::move(close_fut).then(std::move(lam));
+            std::move(complete_fut).wait_with_callback_schedule_if_immediate(loop, std::move(on_complete));
         } else {
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
             char *buf_ptr = buf.ptr();
@@ -71,7 +72,7 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
 }
 
 
-void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
+void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>&&)>&& on_complete) {
     const size_t TOY_BUF_SIZE = 128;
     Buf buf(TOY_BUF_SIZE);
     echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
@@ -109,7 +110,7 @@ void go(el::Loop *loop, const Options& opts, std::move_only_function<void (expec
     }
     unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
 
-    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)](expected<void, message_error> err) mutable {
+    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)](expected<void, message_error>&& err) mutable {
         tpf_setupf("Echo completed...\n");
         on_complete(std::move(err));
     });

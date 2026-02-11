@@ -47,7 +47,8 @@ private:
     std::optional<T> value_;
 
     friend class promise<T>;
-
+    template <class U>
+    friend class future;
 
     void notify_and_detach_completions() {
         intrusive_list<future_notify> notifies = std::move(completion_notifies_);
@@ -78,7 +79,7 @@ public:
     future& operator=(future&& other);
 
     template <class U>
-    future<U> then(std::move_only_function<future<U> (T&)>&& fn) &&;
+    future<U> then(std::move_only_function<future<U> (T&&)>&& fn) &&;
 
     bool has_value() const {
         return value_.has_value();
@@ -96,7 +97,8 @@ public:
 
 template <class T>
 class promise {
-    friend class future<T>;
+    template <class U>
+    friend class future;
     NONCOPYABLE(promise);
     // has backpointer that needs to be maintained
     future<T> *matching_future_ = nullptr;
@@ -217,12 +219,10 @@ void future<T>::wait_with_callback_schedule_if_immediate(Loop *loop, std::move_o
 
 template <class T>
 template <class U>
-future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
+future<U> future<T>::then(std::move_only_function<future<U> (T&&)>&& fn) && {
     tpf_assert(!is_default_constructed());
     if (value_.has_value()) {
-        std::move_only_function<future<U> (T&)> tmp;
-        tmp.swap(fn);
-        return tmp(*value_);
+        return swap_out(fn)(*swap_out(value_));
     }
     tpf_assert(matching_promise_ != nullptr);
     promise<U> prom;
@@ -231,12 +231,8 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
     promise<T> *our_prom = matching_promise_;
 
     tpf_assert(!our_prom->attached_callback_);
-    // TODO: fn = std::move(fn) does not guarantee fn gets destructed (make a function that swaps it out)
-    our_prom->attached_callback_ = [prom = std::move(prom), fn = std::move(fn)](T& value) mutable {
-        std::move_only_function<future<U> (T&)> tmp;
-        tmp.swap(fn);
-        future<U> res = tmp(value);
-        tpf_assert(!res.attached_callback_);
+    our_prom->attached_callback_ = [MC(prom), fn = swap_out(fn)](T&& value) mutable {
+        future<U> res = swap_out(fn)(std::move(value));
 
         if (res.value_.has_value()) {
             // res should be detached from its promise because it has a value.
@@ -244,7 +240,8 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
             // If we have a value just supply it, which detaches prom from prom_fut, perhaps invokes callback
             // TODO: Should we move the whole optional for some performance or other reason like calling *res.value_'s destructor first?
             // TODO: We're in a callback.  Are we really calling recursively?  We could blow the stack.
-            prom.supply_value_and_detach(std::move(*res.value_));
+            std::move(prom).supply_value_and_detach(std::move(*res.value_));
+            res.value_.reset();
         } else {
             // res must have a promise.
             tpf_assert(res.matching_promise_ != nullptr);

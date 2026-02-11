@@ -69,23 +69,29 @@ expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) 
 
 void Pipe::on_update(Loop *loop, uint32_t events) {
     tpf_setupf("on_update has events %" PRIu32 ": %s\n", events, format_epoll_events(events).c_str());
+    bool is_destructed = false;
 
-    bool read_update = events & (EPOLLIN | EPOLLHUP | EPOLLERR);
-    bool write_update = events & (EPOLLOUT | EPOLLHUP | EPOLLERR);
+    const bool read_update = events & (EPOLLIN | EPOLLHUP | EPOLLERR);
+    const bool write_update = events & (EPOLLOUT | EPOLLHUP | EPOLLERR);
 
     if (read_update) {
         if (!read_ready_) {
             read_ready_ = true;
             if (read_promise_.is_active()) {
+                destruct_pointer_ = &is_destructed;
                 try_doing_read();
             }
         }
     }
-    if (write_update) {
-        if (!write_ready_) {
-            write_ready_ = true;
-            if (write_promise_.is_active()) {
-                try_doing_write();
+    if (!is_destructed) {
+        destruct_pointer_ = nullptr;
+        if (write_update && !is_destructed) {
+            if (!write_ready_) {
+                write_ready_ = true;
+                if (write_promise_.is_active()) {
+                    // No need to update destruct_pointer_ here because we don't use is_destructed again.
+                    try_doing_write();
+                }
             }
         }
     }
