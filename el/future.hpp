@@ -86,6 +86,9 @@ public:
     bool is_default_constructed() const {
         return matching_promise_ == nullptr && !value_.has_value();
     }
+
+    // TODO: make cb, and then()'s cb, take a T&&.
+    void wait_with_callback(std::move_only_function<void (T&)>&& fn) &&;
 };
 
 
@@ -167,6 +170,27 @@ future<T>& future<T>::operator=(future&& other) {
 }
 
 template <class T>
+void future<T>::wait_with_callback(std::move_only_function<void (T&)>&& fn) && {
+    tpf_assert(!is_default_constructed());
+    if (value_.has_value()) {
+        std::move_only_function<void (T&)> tmp;
+        tmp.swap(fn);
+        // TODO: Take Loop* param and schedule later?
+        tmp(*value_);
+    }
+
+    promise<T> *our_prom = matching_promise_;
+
+    tpf_assert(!our_prom->attached_callback_);
+    our_prom->attached_callback_.swap(fn);
+    our_prom->matching_future_ = nullptr;
+    matching_promise_ = nullptr;
+    tpf_assert(is_default_constructed());
+    return;
+}
+
+
+template <class T>
 template <class U>
 future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
     tpf_assert(!is_default_constructed());
@@ -182,6 +206,7 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
     promise<T> *our_prom = matching_promise_;
 
     tpf_assert(!our_prom->attached_callback_);
+    // TODO: fn = std::move(fn) does not guarantee fn gets destructed (make a function that swaps it out)
     our_prom->attached_callback_ = [prom = std::move(prom), fn = std::move(fn)](T& value) mutable {
         std::move_only_function<future<U> (T&)> tmp;
         tmp.swap(fn);
