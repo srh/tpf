@@ -20,7 +20,7 @@ private:
     void *read_buf_ = nullptr;
     size_t read_nbytes_ = 0;
     using read_cb_type = std::move_only_function<void (expected<ssize_t, read_error>&&)>;
-    read_cb_type waiting_read_cb_;
+    promise<expected<ssize_t, read_error>> read_promise_;
 
     const void *write_buf_ = nullptr;
     size_t write_nbytes_ = 0;
@@ -52,13 +52,13 @@ public:
 
     // TODO: These have to be interruptible.
     void read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb);
-    future<expected<ssize_t, read_error>> read(Loop *loop, void *buf, size_t nbytes);
+    future<expected<ssize_t, read_error>> read(void *buf, size_t nbytes);
     void write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb);
     static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;
-    void try_doing_read(Loop *loop, bool avoid_reentrancy);
+    void try_doing_read();
     void try_doing_write(Loop *loop, bool avoid_reentrancy);
     [[nodiscard]] expected<close_errsv, epoll_ctl_error> deregister_and_close();
 };

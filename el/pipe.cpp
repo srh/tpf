@@ -76,8 +76,8 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
     if (read_update) {
         if (!read_ready_) {
             read_ready_ = true;
-            if (waiting_read_cb_ != nullptr) {
-                try_doing_read(loop, false);
+            if (read_promise_.is_active()) {
+                try_doing_read();
             }
         }
     }
@@ -92,36 +92,28 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
 }
 
 void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
-    tpf_assert(loop == loop_);
+    future<expected<ssize_t, read_error>> fut = read(buf, nbytes);
+    std::move(fut).wait_with_callback_schedule_if_immediate(loop, std::move(read_cb));
+}
 
-    // The nbytes == 0 case has been considered.  Instead of scheduling the callback
-    // immediately, we perform a ::read only once edge-triggered, which may reveal some
-    // sort of error status.  (We could reverse this decision though.)
-    tpf_assert(!waiting_read_cb_);
+future<expected<ssize_t, read_error>> Pipe::read(void *buf, size_t nbytes) {
+    tpf_assert(read_promise_.is_default_constructed());
     tpf_assert(read_buf_ == nullptr);
     tpf_assert(read_nbytes_ == 0);
-    waiting_read_cb_.swap(read_cb);
+    future<expected<ssize_t, read_error>> fut(&read_promise_);
     read_buf_ = buf;
     read_nbytes_ = nbytes;
 
     if (read_ready_) {
-        try_doing_read(loop, true);
+        try_doing_read();
     }
-}
-
-future<expected<ssize_t, read_error>> Pipe::read(Loop *loop, void *buf, size_t nbytes) {
-    promise<expected<ssize_t, read_error>> prom;
-    future<expected<ssize_t, read_error>> fut(&prom);
-    read(loop, buf, nbytes, [MC(prom)](expected<ssize_t, read_error> result) mutable {
-       prom.supply_value_and_detach(std::move(result));
-    });
     return fut;
 }
 
-void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
+void Pipe::try_doing_read() {
     tpf_setupf("Pipe::try_doing_read\n");
     tpf_assert(read_ready_);
-    tpf_assert(waiting_read_cb_);
+    tpf_assert(!read_promise_.is_default_constructed());
     tpf_assert(read_buf_ != nullptr);
  try_again:
     ssize_t res = ::read(fd_.get(), read_buf_, read_nbytes_);
@@ -151,16 +143,9 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
         nbytes_expec.emplace(res);
     }
 
-    read_cb_type cb;
-    cb.swap(waiting_read_cb_);
     read_buf_ = nullptr;
     read_nbytes_ = 0;
-
-    if (avoid_reentrancy) {
-        loop->schedule([MC(cb), nbytes_expec] mutable { cb(std::move(nbytes_expec)); });
-    } else {
-        cb(std::move(nbytes_expec));
-    }
+    std::move(read_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
 void Pipe::write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb) {
@@ -236,7 +221,7 @@ expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
 }
 
 void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb) {
-    tpf_assert(!pipe->waiting_read_cb_);
+    tpf_assert(pipe->read_promise_.is_default_constructed());
     tpf_assert(!pipe->waiting_write_cb_);
     tpf_assert(loop == pipe->loop_);
 

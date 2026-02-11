@@ -5,7 +5,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <expected>
+#include <functional>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 
 using std::expected;
@@ -89,5 +91,21 @@ struct close_errsv {
     int errsv = 0;
 };
 
+// guarantees the parameter is left in empty state (which the move constructor doesn't do)
+// Style decision: uses lvalue reference instead of rvalue reference to avoid redundant std::move.
+template <class T>
+std::optional<T> swap_out(std::optional<T>& value) {
+    std::optional<T> ret;
+    ret.swap(value);
+    return ret;
+}
+
+// guarantees the parameter is left in empty state (which the move constructors doesn't do)
+template <class F>
+std::move_only_function<F> swap_out(std::move_only_function<F>& value) {
+    std::move_only_function<F> ret;
+    ret.swap(value);
+    return ret;
+}
 
 #endif  // TPF_UTIL_HPP_

@@ -4,6 +4,7 @@
 #include <functional>
 #include <optional>
 
+#include "el/loop.hpp"
 #include "el/intrusive_list.hpp"
 #include "util.hpp"
 
@@ -88,7 +89,9 @@ public:
     }
 
     // TODO: make cb, and then()'s cb, take a T&&.
-    void wait_with_callback(std::move_only_function<void (T&)>&& fn) &&;
+    void wait_with_callback(std::move_only_function<void (T&&)>&& fn) &&;
+
+    void wait_with_callback_schedule_if_immediate(Loop *loop, std::move_only_function<void (T&&)>&& fn) &&;
 };
 
 template <class T>
@@ -99,7 +102,7 @@ class promise {
     future<T> *matching_future_ = nullptr;
 
     // has no backpointer
-    using attached_callback_type = std::move_only_function<void (T&)>;
+    using attached_callback_type = std::move_only_function<void (T&&)>;
     attached_callback_type attached_callback_;
 
 public:
@@ -128,20 +131,28 @@ public:
         tpf_assert(matching_future_ == nullptr);
     }
 
-    // Maybe this should even be marked &&
-    void supply_value_and_detach(T&& value) {
+    bool is_default_constructed() const {
+        return matching_future_ == nullptr && !attached_callback_;
+    }
+    bool is_active() const {
+        return !is_default_constructed();
+    }
+
+    // This leaves promise in default-constructed state before invoking callbacks.
+    void supply_value_and_detach(T&& value) && {
         if (matching_future_ != nullptr) {
             future<T> *fut = matching_future_;
             fut->value_ = std::move(value);
             fut->matching_promise_ = nullptr;
             matching_future_ = nullptr;
-
+            tpf_assert(is_default_constructed());
             fut->notify_and_detach_completions();
         } else {
             tpf_assertf(attached_callback_, "No attached callback -- a promise was leaked");
             attached_callback_type cb;
             cb.swap(attached_callback_);
-            cb(value);
+            tpf_assert(is_default_constructed());
+            cb(std::move(value));
         }
     }
 };
@@ -169,13 +180,11 @@ future<T>& future<T>::operator=(future&& other) {
 }
 
 template <class T>
-void future<T>::wait_with_callback(std::move_only_function<void (T&)>&& fn) && {
+void future<T>::wait_with_callback(std::move_only_function<void (T&&)>&& fn) && {
     tpf_assert(!is_default_constructed());
     if (value_.has_value()) {
-        std::move_only_function<void (T&)> tmp;
-        tmp.swap(fn);
-        // TODO: Take Loop* param and schedule later?
-        tmp(*value_);
+        swap_out(fn)(*swap_out(value_));
+        return;
     }
 
     promise<T> *our_prom = matching_promise_;
@@ -188,6 +197,23 @@ void future<T>::wait_with_callback(std::move_only_function<void (T&)>&& fn) && {
     return;
 }
 
+template <class T>
+void future<T>::wait_with_callback_schedule_if_immediate(Loop *loop, std::move_only_function<void (T&&)>&& fn) && {
+    tpf_assert(!is_default_constructed());
+    if (value_.has_value()) {
+        loop->schedule([fn = swap_out(fn), v = swap_out(value_)] mutable { fn(std::move(*v)); });
+        return;
+    }
+
+    promise<T> *our_prom = matching_promise_;
+
+    tpf_assert(!our_prom->attached_callback_);
+    our_prom->attached_callback_.swap(fn);
+    our_prom->matching_future_ = nullptr;
+    matching_promise_ = nullptr;
+    tpf_assert(is_default_constructed());
+    return;
+}
 
 template <class T>
 template <class U>
@@ -305,7 +331,7 @@ struct wait_any_state {
 
         if (!value_supplied) {
             value_supplied = true;
-            prom.supply_value_and_detach(std::move(index));
+            std::move(prom).supply_value_and_detach(std::move(index));
         }
     }
 };
