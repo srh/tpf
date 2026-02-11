@@ -23,7 +23,8 @@ struct Buf {
 void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
     std::span<char> slice = buf.get();
     auto *pipe_ptr = in_pipe.get();
-    pipe_ptr->read(loop, slice.data(), slice.size(), [loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error> nbytes) mutable {
+    auto fut = pipe_ptr->read(loop, slice.data(), slice.size());
+    std::move(fut).wait_with_callback([loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error> nbytes) mutable {
         if (!nbytes.has_value()) {
             loop->schedule([err = nbytes.error(), MC(on_complete)] mutable { on_complete(unexpected(message_error(err))); });
             return;
