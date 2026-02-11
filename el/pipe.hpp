@@ -49,11 +49,9 @@ public:
     }
 
     // TODO: These have to be interruptible.
-    void read(Loop *loop, void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, read_error>&&)>&& read_cb);
     future<expected<ssize_t, read_error>> read(void *buf, size_t nbytes);
-    void write(Loop *loop, const void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, write_error>)>&& write_cb);
     future<expected<ssize_t, write_error>> write(const void *buf, size_t nbytes);
-    static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb);
+    static future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<Pipe>&& pipe);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;

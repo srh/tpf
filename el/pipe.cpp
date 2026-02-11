@@ -91,11 +91,6 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
     }
 }
 
-void Pipe::read(Loop *loop, void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, read_error>&&)>&& read_cb) {
-    future<expected<ssize_t, read_error>> fut = read(buf, nbytes);
-    std::move(fut).wait_with_callback_schedule_if_immediate(loop, std::move(read_cb));
-}
-
 future<expected<ssize_t, read_error>> Pipe::read(void *buf, size_t nbytes) {
     tpf_assert(read_promise_.is_default_constructed());
     tpf_assert(read_buf_ == nullptr);
@@ -146,11 +141,6 @@ void Pipe::try_doing_read() {
     read_buf_ = nullptr;
     read_nbytes_ = 0;
     std::move(read_promise_).supply_value_and_detach(std::move(nbytes_expec));
-}
-
-void Pipe::write(Loop *loop, const void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, write_error>)>&& write_cb) {
-    auto fut = write(buf, nbytes);
-    std::move(fut).wait_with_callback_schedule_if_immediate(loop, std::move(write_cb));
 }
 
 future<expected<ssize_t, write_error>> Pipe::write(const void *buf, size_t nbytes) {
@@ -217,17 +207,17 @@ expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
     }
 }
 
-void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb) {
+future<expected<close_errsv, epoll_ctl_error>> Pipe::close(unique_ptr<Pipe>&& pipe) {
     tpf_assert(pipe->read_promise_.is_default_constructed());
     tpf_assert(pipe->write_promise_.is_default_constructed());
-    tpf_assert(loop == pipe->loop_);
 
     auto errsv_expec = pipe->deregister_and_close();
 
-    // Destruct pipe before callback.
+    // Destruct pipe before callba... returning.
     pipe.reset();
 
-    loop->schedule([MC(close_cb), errsv_expec] mutable { close_cb(errsv_expec); });
+    return future<expected<close_errsv, epoll_ctl_error>>(std::move(errsv_expec));
+
 }
 
 }  // namespace el

@@ -31,18 +31,17 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            loop->schedule([loop, MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
-                el::Pipe::close(loop, std::move(in_pipe), [MC(on_complete)](expected<close_errsv, epoll_ctl_error> errsv_expec) mutable {
-                    if (!errsv_expec.has_value()) {
-                        on_complete(unexpected(message_error(errsv_expec.error())));
-                        return;
-                    }
-                    if (errsv_expec.value().errsv != 0) {
-                        // TODO: Janky error messaging.
-                        tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
-                    }
-                    on_complete(expected<void, message_error>());
-                });
+            auto close_fut = el::Pipe::close(std::move(in_pipe));
+            std::move(close_fut).wait_with_callback_schedule_if_immediate(loop, [MC(on_complete)](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
+                if (!errsv_expec.has_value()) {
+                    on_complete(unexpected(message_error(errsv_expec.error())));
+                    return;
+                }
+                if (errsv_expec.value().errsv != 0) {
+                    // TODO: Janky error messaging.
+                    tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
+                }
+                on_complete(expected<void, message_error>());
             });
         } else {
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
