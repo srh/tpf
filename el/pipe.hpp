@@ -19,13 +19,11 @@ private:
 
     void *read_buf_ = nullptr;
     size_t read_nbytes_ = 0;
-    using read_cb_type = std::move_only_function<void (expected<ssize_t, read_error>&&)>;
     promise<expected<ssize_t, read_error>> read_promise_;
 
     const void *write_buf_ = nullptr;
     size_t write_nbytes_ = 0;
-    using write_cb_type = std::move_only_function<void (expected<ssize_t, write_error>)>;
-    write_cb_type waiting_write_cb_;
+    promise<expected<ssize_t, write_error>> write_promise_;
 
 public:
     // fd must be an O_NONBLOCK pipe fd
@@ -51,15 +49,16 @@ public:
     }
 
     // TODO: These have to be interruptible.
-    void read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb);
+    void read(Loop *loop, void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, read_error>&&)>&& read_cb);
     future<expected<ssize_t, read_error>> read(void *buf, size_t nbytes);
-    void write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb);
+    void write(Loop *loop, const void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, write_error>)>&& write_cb);
+    future<expected<ssize_t, write_error>> write(const void *buf, size_t nbytes);
     static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;
     void try_doing_read();
-    void try_doing_write(Loop *loop, bool avoid_reentrancy);
+    void try_doing_write();
     [[nodiscard]] expected<close_errsv, epoll_ctl_error> deregister_and_close();
 };
 

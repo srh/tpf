@@ -84,14 +84,14 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
     if (write_update) {
         if (!write_ready_) {
             write_ready_ = true;
-            if (waiting_write_cb_) {
-                try_doing_write(loop, false);
+            if (write_promise_.is_active()) {
+                try_doing_write();
             }
         }
     }
 }
 
-void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
+void Pipe::read(Loop *loop, void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, read_error>&&)>&& read_cb) {
     future<expected<ssize_t, read_error>> fut = read(buf, nbytes);
     std::move(fut).wait_with_callback_schedule_if_immediate(loop, std::move(read_cb));
 }
@@ -113,7 +113,7 @@ future<expected<ssize_t, read_error>> Pipe::read(void *buf, size_t nbytes) {
 void Pipe::try_doing_read() {
     tpf_setupf("Pipe::try_doing_read\n");
     tpf_assert(read_ready_);
-    tpf_assert(!read_promise_.is_default_constructed());
+    tpf_assert(read_promise_.is_active());
     tpf_assert(read_buf_ != nullptr);
  try_again:
     ssize_t res = ::read(fd_.get(), read_buf_, read_nbytes_);
@@ -148,24 +148,28 @@ void Pipe::try_doing_read() {
     std::move(read_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
-void Pipe::write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb) {
-    tpf_assert(loop == loop_);
+void Pipe::write(Loop *loop, const void *buf, size_t nbytes, std::move_only_function<void (expected<ssize_t, write_error>)>&& write_cb) {
+    auto fut = write(buf, nbytes);
+    std::move(fut).wait_with_callback_schedule_if_immediate(loop, std::move(write_cb));
+}
 
-    tpf_assert(!waiting_write_cb_);
+future<expected<ssize_t, write_error>> Pipe::write(const void *buf, size_t nbytes) {
+    tpf_assert(write_promise_.is_default_constructed());
     tpf_assert(write_buf_ == nullptr);
     tpf_assert(write_nbytes_ == 0);
-    waiting_write_cb_.swap(write_cb);
+    future<expected<ssize_t, write_error>> fut(&write_promise_);
     write_buf_ = buf;
     write_nbytes_ = nbytes;
 
     if (write_ready_) {
-        try_doing_write(loop, true);
+        try_doing_write();
     }
+    return fut;
 }
 
-void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
+void Pipe::try_doing_write() {
     tpf_assert(write_ready_);
-    tpf_assert(waiting_write_cb_);
+    tpf_assert(write_promise_.is_active());
     tpf_assert(write_buf_ != nullptr);
  try_again:
     ssize_t res = ::write(fd_.get(), write_buf_, write_nbytes_);
@@ -193,16 +197,9 @@ void Pipe::try_doing_write(Loop *loop, bool avoid_reentrancy) {
         nbytes_expec.emplace(res);
     }
 
-    write_cb_type cb;
-    cb.swap(waiting_write_cb_);
     write_buf_ = nullptr;
     write_nbytes_ = 0;
-
-    if (avoid_reentrancy) {
-        loop->schedule([MC(cb), nbytes_expec] mutable { cb(nbytes_expec); });
-    } else {
-        cb(nbytes_expec);
-    }
+    std::move(write_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
 expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
@@ -222,7 +219,7 @@ expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
 
 void Pipe::close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb) {
     tpf_assert(pipe->read_promise_.is_default_constructed());
-    tpf_assert(!pipe->waiting_write_cb_);
+    tpf_assert(pipe->write_promise_.is_default_constructed());
     tpf_assert(loop == pipe->loop_);
 
     auto errsv_expec = pipe->deregister_and_close();

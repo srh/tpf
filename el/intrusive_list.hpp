@@ -52,10 +52,12 @@ protected:
 
 public:
     intrusive_list_node *next() {
+        tpf_assert(next_ != nullptr);
         return next_;
     }
     void detach() {
         tpf_assert(!is_detached());
+        tpf_assert(next_ != this);
         next_->prev_ = prev_;
         prev_->next_ = next_;
         next_ = nullptr;
@@ -63,6 +65,7 @@ public:
     }
 
     bool is_detached() const {
+        tpf_assert((next_ == nullptr) == (prev_ == nullptr));
         return next_ == nullptr;
     }
 };
@@ -78,17 +81,19 @@ public:
         prev_ = this;
     }
     ~intrusive_list() {
-        tpf_assert(empty());
+        tpf_assert(next_ == this);
+        tpf_assert(prev_ == this);
         // set to nullptr so that ~intrusive_list_node superclass can assert the node is detached.
         next_ = nullptr;
         prev_ = nullptr;
     }
     intrusive_list(intrusive_list&& other) : intrusive_list_node() {
         // Careful: This is "slick" in how it handles the empty list case.
-        other.next_->prev_ = this;
-        other.prev_->next_ = this;
+        intrusive_list_node *other_next = other.next_;
+        intrusive_list_node *other_prev = other.prev_;
+        other_next->prev_ = this;
+        other_prev->next_ = this;
         // Empty list case: Here other.next_ and other.prev_ point at this.
-
         next_ = other.next_;
         prev_ = other.prev_;
         // Empty list case: next_ and prev_ point at this (because other.next_ got updated first).
@@ -96,6 +101,9 @@ public:
         // Unlike intrusive_list_node(intrusive_list_node&&), we reset other to point at self.
         other.next_ = &other;
         other.prev_ = &other;
+
+        // TODO: Remove
+        assert_shallow();
     }
     void operator=(intrusive_list&& other) = delete;
 
@@ -112,6 +120,32 @@ public:
         intrusive_list_node *node = elem;
         tpf_assert(node->is_detached());
         node->insert_before(this);
+    }
+
+    void assert_shallow() {
+        tpf_assert(next_ != nullptr);
+        tpf_assert(prev_ != nullptr);
+        intrusive_list_node *selph = self();
+        tpf_assert(selph != nullptr);
+        tpf_assert(selph == this);
+        tpf_assert((next_ == selph) == (prev_ == selph));
+        tpf_assert(next_->prev_ == selph);
+        tpf_assert(prev_->next_ == selph);
+    }
+
+    void assert_deep() {
+        assert_shallow();
+        intrusive_list_node *node = head();
+        tpf_assert(node == next_);
+        intrusive_list_node *selph = self();
+        tpf_assert(selph == this);
+        tpf_assert(selph != nullptr);
+        while (node != selph) {
+            tpf_assert(node != nullptr);
+            tpf_assert(node->next_ != nullptr);
+            tpf_assert(node == node->next_->prev_);
+            node = node->next_;
+        }
     }
 };
 

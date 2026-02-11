@@ -48,7 +48,8 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
             char *buf_ptr = buf.ptr();
             auto *pipe_ptr = out_pipe.get();
-            pipe_ptr->write(loop, buf_ptr, nbytes.value(), [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error> nbytes_expec) mutable {
+            auto write_fut = pipe_ptr->write(buf_ptr, nbytes.value());
+            std::move(write_fut).wait_with_callback_schedule_if_immediate(loop, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error> nbytes_expec) mutable {
                 if (!nbytes_expec.has_value()) {
                     on_complete(unexpected(message_error{nbytes_expec.error()}));
                     return;
