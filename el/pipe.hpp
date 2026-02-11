@@ -1,6 +1,7 @@
 #ifndef TPF_EL_PIPE_HPP
 #define TPF_EL_PIPE_HPP
 
+#include "el/future.hpp"
 #include "el/loop.hpp"
 
 namespace el {
@@ -18,7 +19,7 @@ private:
 
     void *read_buf_ = nullptr;
     size_t read_nbytes_ = 0;
-    using read_cb_type = std::move_only_function<void (expected<ssize_t, read_error>)>;
+    using read_cb_type = std::move_only_function<void (expected<ssize_t, read_error>&&)>;
     read_cb_type waiting_read_cb_;
 
     const void *write_buf_ = nullptr;
@@ -51,6 +52,7 @@ public:
 
     // TODO: These have to be interruptible.
     void read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb);
+    future<expected<ssize_t, read_error>> read(Loop *loop, void *buf, size_t nbytes);
     void write(Loop *loop, const void *buf, size_t nbytes, write_cb_type&& write_cb);
     static void close(Loop *loop, unique_ptr<Pipe>&& pipe, std::move_only_function<void (expected<close_errsv, epoll_ctl_error>)>&& close_cb);
 

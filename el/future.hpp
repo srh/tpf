@@ -91,7 +91,6 @@ public:
     void wait_with_callback(std::move_only_function<void (T&)>&& fn) &&;
 };
 
-
 template <class T>
 class promise {
     friend class future<T>;
@@ -244,6 +243,14 @@ future<U> future<T>::then(std::move_only_function<future<U> (T&)>&& fn) && {
     tpf_assert(is_default_constructed());
     return fut;
 }
+
+template <class T>
+struct promise_supply_cb {
+    promise<T> prom;
+    void operator()(T&& result) {
+        prom.supply_value_and_detach(std::move(result));
+    }
+};
 
 // TODO: Maybe, move wait_any to a separate file.
 template <class T>

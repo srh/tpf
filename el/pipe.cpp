@@ -109,6 +109,15 @@ void Pipe::read(Loop *loop, void *buf, size_t nbytes, read_cb_type&& read_cb) {
     }
 }
 
+future<expected<ssize_t, read_error>> Pipe::read(Loop *loop, void *buf, size_t nbytes) {
+    promise<expected<ssize_t, read_error>> prom;
+    future<expected<ssize_t, read_error>> fut(&prom);
+    read(loop, buf, nbytes, [MC(prom)](expected<ssize_t, read_error> result) mutable {
+       prom.supply_value_and_detach(std::move(result));
+    });
+    return fut;
+}
+
 void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
     tpf_setupf("Pipe::try_doing_read\n");
     tpf_assert(read_ready_);
@@ -148,9 +157,9 @@ void Pipe::try_doing_read(Loop *loop, bool avoid_reentrancy) {
     read_nbytes_ = 0;
 
     if (avoid_reentrancy) {
-        loop->schedule([MC(cb), nbytes_expec] mutable { cb(nbytes_expec); });
+        loop->schedule([MC(cb), nbytes_expec] mutable { cb(std::move(nbytes_expec)); });
     } else {
-        cb(nbytes_expec);
+        cb(std::move(nbytes_expec));
     }
 }
 
