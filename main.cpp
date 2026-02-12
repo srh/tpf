@@ -108,12 +108,20 @@ el::future<expected<void, message_error>> go(el::Loop *loop, const Options& opts
 int main(int argc, const char **argv) {
     expected<Options, message_error> opts_expec = parse_command_line(argc, argv);
     if (!opts_expec.has_value()) {
-        tpf_setupf("Command line parsing failed: %s\n", opts_expec.error().c_str());
+        printf("Command line parsing failed: %s\n", opts_expec.error().c_str());
+        print_usage_message();
+        return 2;
     }
     Options& opts = opts_expec.value();
 
+    if (opts.help) {
+        print_help_message();
+        return 0;
+    }
+
+
     tpf_assert(argc > 0);
-    printf("Hello, world!\n");
+    tpf_setupf("Hello, world!\n");
 
     {
         expected<int, epoll_create_error> fd_expec = el::Loop::make_epoll_fd();
