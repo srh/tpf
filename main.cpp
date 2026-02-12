@@ -20,17 +20,16 @@ struct Buf {
 };
 
 
-void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>&&)>&& on_complete) {
+el::future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     std::span<char> slice = buf.get();
     auto read_fut = in_pipe->read(slice.data(), slice.size());
-    std::move(read_fut).wait_with_callback([loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
+    return std::move(read_fut).then([loop, MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
         if (!nbytes.has_value()) {
-            loop->schedule([err = nbytes.error(), MC(on_complete)] mutable { on_complete(unexpected(message_error(err))); });
-            return;
+            return el::future{expected<void, message_error>(unexpected(message_error(nbytes.error())))};
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            el::Pipe::close(std::move(in_pipe))
+            return el::Pipe::close(std::move(in_pipe))
             .then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
                 if (!errsv_expec.has_value()) {
                     return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
@@ -40,38 +39,33 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
                     tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
                 }
                 return el::future{expected<void, message_error>()};
-            })
-            .wait_with_callback_schedule_if_immediate(loop, std::move(on_complete));
+            });
         } else {
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
             auto write_fut = out_pipe->write(buf.ptr(), nbytes.value());
-            std::move(write_fut).wait_with_callback_schedule_if_immediate(loop, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error> nbytes_expec) mutable {
+            return std::move(write_fut).then([MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error>&& nbytes_expec) mutable {
                 if (!nbytes_expec.has_value()) {
-                    on_complete(unexpected(message_error{nbytes_expec.error()}));
-                    return;
+                    return el::future{expected<void, message_error>(unexpected(message_error{nbytes_expec.error()}))};
                 }
                 size_t written_nbytes = static_cast<size_t>(nbytes_expec.value());
                 tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.ptr());
                 if (written_nbytes != nbytes) {
                     // TODO: Write all bytes in a loop.
                     // Uh, wouldn't we get an error?
-                    on_complete(unexpected(message_error{"write was short"}));
-                    return;
+                    return el::future{expected<void, message_error>(unexpected(message_error{"write was short"}))};
                 }
-                // Possibly excessive ->schedule.
-                loop->schedule([loop, MC(buf), MC(in_pipe), MC(out_pipe), MC(on_complete)] mutable {
-                    echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
-                });
+                // TODO: We might be infinitely recursing here.
+                return echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe));
             });
         }
     });
 }
 
 
-void echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>&&)>&& on_complete) {
+el::future<expected<void, message_error>> echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     const size_t TOY_BUF_SIZE = 128;
     Buf buf(TOY_BUF_SIZE);
-    echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe), std::move(on_complete));
+    return echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe));
 }
 
 expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const char *path, int oflag) {
@@ -89,26 +83,25 @@ expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const ch
     return el::make_pipe_from_fd(loop, fd);
 }
 
-void go(el::Loop *loop, const Options& opts, std::move_only_function<void (expected<void, message_error>)>&& on_complete) {
+el::future<expected<void, message_error>> go(el::Loop *loop, const Options& opts) {
     tpf_setupf("go()...\n");
 
     auto in_pipe_expec = open_pipe(loop, opts.in_fifo_path.c_str(), O_RDONLY);
     if (!in_pipe_expec.has_value()) {
-        on_complete(unexpected(in_pipe_expec.error()));
-        return;
+        return el::future{expected<void, message_error>(unexpected(in_pipe_expec.error()))};
     }
     // Silly(?) experiment using references with .value() on expected<_,_>.
     unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
     auto out_pipe_expec = open_pipe(loop, opts.out_fifo_path.c_str(), O_WRONLY);
     if (!out_pipe_expec.has_value()) {
-        on_complete(unexpected(out_pipe_expec.error()));
-        return;
+        return el::future{expected<void, message_error>(unexpected(out_pipe_expec.error()))};
     }
     unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
 
-    echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe), [MC(on_complete)](expected<void, message_error>&& err) mutable {
+    return echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe))
+    .then([](expected<void, message_error>&& err) mutable {
         tpf_setupf("Echo completed...\n");
-        on_complete(std::move(err));
+        return el::future{std::move(err)};
     });
 }
 
@@ -131,13 +124,16 @@ int main(int argc, const char **argv) {
         el::Loop loop(fd_expec.value());
         tpf_setupf("Constructed el::Loop\n");
 
-        loop.schedule([&loop, MC(opts)] mutable { go(&loop, opts, [](expected<void, message_error> void_expec) {
-            if (!void_expec.has_value()) {
-                tpf_setupf("Finished with error: %s\n", void_expec.error().msg().c_str());
-            } else {
-                tpf_setupf("Finished.\n");
-            }
-        }); });
+        loop.schedule([&loop, MC(opts)] mutable {
+            go(&loop, opts)
+            .wait_with_callback([](expected<void, message_error> void_expec) {
+                if (!void_expec.has_value()) {
+                    tpf_setupf("Finished with error: %s\n", void_expec.error().msg().c_str());
+                } else {
+                    tpf_setupf("Finished.\n");
+                }
+            });
+        });
 
         while (loop.has_stuff_to_do()) {
             expected<void, epoll_wait_error> result = loop.full_step();
