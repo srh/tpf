@@ -1,0 +1,4 @@
+#ifndef TPF__SIGNALFD_HPP
+#define TPF__SIGNALFD_HPP
+
+#endif  // TPF__SIGNALFD_HPP

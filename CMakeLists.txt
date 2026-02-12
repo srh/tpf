@@ -14,6 +14,8 @@ add_executable(tpf
         options.cpp
         el/fd.hpp
         el/future.hpp
-        el/intrusive_list.hpp)
+        el/intrusive_list.hpp
+        el/fd_registrant.hpp
+        el/fd_registrant.cpp)
 
 target_include_directories(tpf PRIVATE .)

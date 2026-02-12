@@ -198,21 +198,6 @@ void Pipe::try_doing_write() {
     std::move(write_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
-expected<close_errsv, epoll_ctl_error> Pipe::deregister_and_close() {
-    int fd = std::move(fd_).release();
-    auto result = loop_->unregister_for_epoll(this, fd);
-    if (result.has_value()) {
-        // TODO: Is close non-blocking?
-        int res = ::close(fd);
-        int errsv = res == 0 ? 0 : errno;
-
-        static_assert(__linux__, "Linux-specific EINTR behavior here.");
-        return close_errsv{errsv};
-    } else {
-        return unexpected(result.error());
-    }
-}
-
 future<expected<close_errsv, epoll_ctl_error>> Pipe::close(unique_ptr<Pipe>&& pipe) {
     tpf_assert(pipe->read_promise_.is_default_constructed());
     tpf_assert(pipe->write_promise_.is_default_constructed());

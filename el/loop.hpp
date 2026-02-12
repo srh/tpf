@@ -16,12 +16,14 @@ namespace el {
 class Loop;
 
 class EpollRegistrant {
+    NONCOPYABLE(EpollRegistrant);
 protected:
     // Protected, not private, only because we use loop == loop_ in an assertion.
     friend class Loop;
     Loop *loop_ = nullptr;
     size_t registered_index_ = SIZE_MAX;
     virtual void on_update(Loop *loop, uint32_t events) = 0;
+    EpollRegistrant() = default;
 protected:
     ~EpollRegistrant() = default;
 };
