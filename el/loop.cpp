@@ -115,16 +115,16 @@ expected<void, epoll_wait_error> Loop::full_step() {
         return result;
     }
 
-    decltype(enqueued_actions_) actions;
-    actions.swap(enqueued_actions_);
-    for (auto& action : actions) {
+    tpf_assert(spare_actions_buf_.empty());
+    spare_actions_buf_.swap(enqueued_actions_);
+    for (auto& action : spare_actions_buf_) {
         std::move_only_function<void ()> ac;
         ac.swap(action);
         ac();
         // ac is destroyed immediately after running
         // TODO(alloc) don't use std::move_only_function
     }
-    // TODO(alloc) we destruct actions (and regrow enqueued_actions_).
+    spare_actions_buf_.clear();
 
     mid_step_ = false;
     return expected<void, epoll_wait_error>();

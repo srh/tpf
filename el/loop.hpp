@@ -43,6 +43,8 @@ private:
     std::vector<EpollRegistrant *> registrants_;
     // TODO: Avoid use of std::move_only_function (generally)
     std::vector<std::move_only_function<void ()>> enqueued_actions_;
+    // Avoids reallocating the vector.  Kind of spurious when elements are move_only_function.
+    std::vector<std::move_only_function<void ()>> spare_actions_buf_;
 
 public:
     // Not movable as long as EpollRegistrant has pointers to us.
