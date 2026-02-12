@@ -15,6 +15,8 @@ add_executable(tpf
         el/fd.hpp
         el/future.hpp
         el/intrusive_list.hpp
+        el/signalfd.hpp
+        el/signalfd.cpp
         el/fd_registrant.hpp
         el/fd_registrant.cpp)
 
