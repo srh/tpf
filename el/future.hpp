@@ -35,6 +35,15 @@ protected:
 };
 
 template <class T>
+struct is_future {
+    static constexpr bool value = false;
+};
+template <class T>
+struct is_future<future<T>> {
+    static constexpr bool value = true;
+};
+
+template <class T>
 class future {
 private:
     NONCOPYABLE(future);
@@ -82,6 +91,7 @@ public:
     future<U> then_f(std::move_only_function<future<U> (T&&)>&& fn) &&;
 
     template <class C>
+    requires (is_future<std::invoke_result_t<C&, T&&>>::value)
     std::invoke_result_t<C&, T&&> then(C&& callable) && {
         return std::move(*this).then_f(std::move_only_function<std::invoke_result_t<C&, T&&> (T&&)>(std::forward<C>(callable)));
     }
@@ -94,7 +104,6 @@ public:
         return matching_promise_ == nullptr && !value_.has_value();
     }
 
-    // TODO: make cb, and then()'s cb, take a T&&.
     void wait_with_callback(std::move_only_function<void (T&&)>&& fn) &&;
 
     void wait_with_callback_schedule_if_immediate(Loop *loop, std::move_only_function<void (T&&)>&& fn) &&;
