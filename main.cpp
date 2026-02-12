@@ -31,7 +31,7 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
             el::Pipe::close(std::move(in_pipe))
-            .then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
+            .then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
                 if (!errsv_expec.has_value()) {
                     return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
                 }
