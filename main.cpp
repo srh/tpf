@@ -22,17 +22,16 @@ struct Buf {
 
 void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe, std::move_only_function<void (expected<void, message_error>&&)>&& on_complete) {
     std::span<char> slice = buf.get();
-    auto *pipe_ptr = in_pipe.get();
-    auto fut = pipe_ptr->read(slice.data(), slice.size());
-    std::move(fut).wait_with_callback([loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
+    auto read_fut = in_pipe->read(slice.data(), slice.size());
+    std::move(read_fut).wait_with_callback([loop, MC(on_complete), MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
         if (!nbytes.has_value()) {
             loop->schedule([err = nbytes.error(), MC(on_complete)] mutable { on_complete(unexpected(message_error(err))); });
             return;
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            el::future<expected<close_errsv, epoll_ctl_error>> close_fut = el::Pipe::close(std::move(in_pipe));
-            el::future<expected<void, message_error>> complete_fut = std::move(close_fut).then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
+            el::Pipe::close(std::move(in_pipe))
+            .then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
                 if (!errsv_expec.has_value()) {
                     return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
                 }
@@ -41,13 +40,11 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
                     tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
                 }
                 return el::future{expected<void, message_error>()};
-            });
-            std::move(complete_fut).wait_with_callback_schedule_if_immediate(loop, std::move(on_complete));
+            })
+            .wait_with_callback_schedule_if_immediate(loop, std::move(on_complete));
         } else {
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
-            char *buf_ptr = buf.ptr();
-            auto *pipe_ptr = out_pipe.get();
-            auto write_fut = pipe_ptr->write(buf_ptr, nbytes.value());
+            auto write_fut = out_pipe->write(buf.ptr(), nbytes.value());
             std::move(write_fut).wait_with_callback_schedule_if_immediate(loop, [MC(on_complete), MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error> nbytes_expec) mutable {
                 if (!nbytes_expec.has_value()) {
                     on_complete(unexpected(message_error{nbytes_expec.error()}));
