@@ -79,7 +79,12 @@ public:
     future& operator=(future&& other);
 
     template <class U>
-    future<U> then(std::move_only_function<future<U> (T&&)>&& fn) &&;
+    future<U> then_f(std::move_only_function<future<U> (T&&)>&& fn) &&;
+
+    template <class C>
+    std::invoke_result_t<C&, T&&> then(C&& callable) && {
+        return std::move(*this).then_f(std::move_only_function<std::invoke_result_t<C&, T&&> (T&&)>(std::forward<C>(callable)));
+    }
 
     bool has_value() const {
         return value_.has_value();
@@ -219,7 +224,7 @@ void future<T>::wait_with_callback_schedule_if_immediate(Loop *loop, std::move_o
 
 template <class T>
 template <class U>
-future<U> future<T>::then(std::move_only_function<future<U> (T&&)>&& fn) && {
+future<U> future<T>::then_f(std::move_only_function<future<U> (T&&)>&& fn) && {
     tpf_assert(!is_default_constructed());
     if (value_.has_value()) {
         return swap_out(fn)(*swap_out(value_));

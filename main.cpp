@@ -32,7 +32,7 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
             el::future<expected<close_errsv, epoll_ctl_error>> close_fut = el::Pipe::close(std::move(in_pipe));
-            std::move_only_function<el::future<expected<void, message_error>>(expected<close_errsv, epoll_ctl_error>&&)> lam = [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
+            el::future<expected<void, message_error>> complete_fut = std::move(close_fut).then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable -> el::future<expected<void, message_error>> {
                 if (!errsv_expec.has_value()) {
                     return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
                 }
@@ -41,8 +41,7 @@ void echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, un
                     tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
                 }
                 return el::future{expected<void, message_error>()};
-            };
-            el::future<expected<void, message_error>> complete_fut = std::move(close_fut).then(std::move(lam));
+            });
             std::move(complete_fut).wait_with_callback_schedule_if_immediate(loop, std::move(on_complete));
         } else {
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
