@@ -81,7 +81,7 @@ public:
 
     future() : matching_promise_{nullptr}, completion_notifies_{}, value_{} {}
 
-    future(T&& value) : matching_promise_{nullptr}, completion_notifies_{}, value_{std::move(value)} {}
+    explicit future(T&& value) : matching_promise_{nullptr}, completion_notifies_{}, value_{std::move(value)} {}
 
     future(future&& other);
     // Asserts we are in a default-constructed state.
@@ -124,7 +124,7 @@ class promise {
 public:
     promise() : matching_future_(nullptr), attached_callback_{} {}
 
-    promise(promise&& other) : matching_future_(other.matching_future_), attached_callback_(std::move(other.attached_callback_)) {
+    promise(promise&& other) : matching_future_(other.matching_future_), attached_callback_(swap_out(other.attached_callback_)) {
         if (matching_future_ != nullptr) {
             matching_future_->matching_promise_ = this;
         }
@@ -259,20 +259,31 @@ future<U> future<T>::then_f(std::move_only_function<future<U> (T&&)>&& fn) && {
         } else {
             // res must have a promise.
             tpf_assert(res.matching_promise_ != nullptr);
-
-            // Splice fut's promise pointer (where "fut" is wherever the local
-            // variable 'fut' above got moved to) to point to the new promise (and
-            // vice versa).
-            future<U> *prom_fut = prom.matching_future_;
-            tpf_assert(prom_fut != nullptr);
-            tpf_assert(prom_fut->matching_promise_ == &prom);
-            prom_fut->matching_promise_ = nullptr;
-            prom.matching_future_ = nullptr;
-
             promise<U> *res_promise = res.matching_promise_;
-            prom_fut->matching_promise_ = res_promise;
-            res.matching_promise_ = nullptr;
-            res_promise->matching_future_ = prom_fut;
+            tpf_assert(res_promise->matching_future_ == &res);
+
+            future<U> *prom_fut = prom.matching_future_;
+            if (prom_fut != nullptr) {
+                // Splice fut's promise pointer (where "fut" is wherever the local
+                // variable 'fut' above got moved to) to point to the new promise (and
+                // vice versa).
+                tpf_assert(prom_fut->matching_promise_ == &prom);
+                prom_fut->matching_promise_ = nullptr;
+                prom.matching_future_ = nullptr;
+
+                prom_fut->matching_promise_ = res_promise;
+                res.matching_promise_ = nullptr;
+                res_promise->matching_future_ = prom_fut;
+            } else {
+                tpf_assert(prom.attached_callback_);
+                // Splice prom's callback into res.matching_promise_.
+                tpf_assert(!res_promise->attached_callback_);
+                res_promise->attached_callback_.swap(prom.attached_callback_);
+                res_promise->matching_future_ = nullptr;
+                res.matching_promise_ = nullptr;
+                tpf_assert(res.completion_notifies_.empty());
+
+            }
         }
     };
     our_prom->matching_future_ = nullptr;
