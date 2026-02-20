@@ -18,6 +18,7 @@ add_executable(tpf
         el/signalfd.hpp
         el/signalfd.cpp
         el/fd_registrant.hpp
-        el/fd_registrant.cpp)
+        el/fd_registrant.cpp
+        el/wait_any.hpp)
 
 target_include_directories(tpf PRIVATE .)

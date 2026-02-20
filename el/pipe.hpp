@@ -7,23 +7,44 @@
 
 namespace el {
 
+class Pipe;
+
+// TODO (never?): Instead of pipe_, we could use offset-of-field pointer arithmetic to find Pipe *.
+class pipe_read_promise : public cancellable_promise<expected<ssize_t, read_error>> {
+    NONCOPYABLE(pipe_read_promise);
+    friend class Pipe;
+    void cancel() override;
+    explicit pipe_read_promise(Pipe *pipe) : pipe_(pipe) {}
+    Pipe *const pipe_;
+};
+
+class pipe_write_promise : public cancellable_promise<expected<ssize_t, write_error>> {
+    NONCOPYABLE(pipe_write_promise);
+    friend class Pipe;
+    void cancel() override;
+    explicit pipe_write_promise(Pipe *pipe) : pipe_(pipe) {}
+    Pipe *const pipe_;
+};
+
 // One end of a pipe.
 class Pipe : private EpollRegistrantWithFd {
     // Pipe is meant for use with unique_ptr.
     NONCOPYABLE(Pipe);
 
 private:
+    friend class pipe_read_promise;
+    friend class pipe_write_promise;
     // We start by assuming they're ready for a first read/write.
     bool read_ready_ = true;
     bool write_ready_ = true;
 
     void *read_buf_ = nullptr;
     size_t read_nbytes_ = 0;
-    promise<expected<ssize_t, read_error>> read_promise_;
+    pipe_read_promise read_promise_;
 
     const void *write_buf_ = nullptr;
     size_t write_nbytes_ = 0;
-    promise<expected<ssize_t, write_error>> write_promise_;
+    pipe_write_promise write_promise_;
 
     // TODO: This is icky, very hackish.
     // TODO: Could point at a thread-local instead of nullptr, avoid conditional check.
@@ -31,7 +52,7 @@ private:
 
 public:
     // fd must be an O_NONBLOCK pipe fd
-    Pipe(Loop *loop, int fd) : EpollRegistrantWithFd(loop, fd, EpollInOut::inout()) {
+    Pipe(Loop *loop, int fd) : EpollRegistrantWithFd(loop, fd, EpollInOut::inout()), read_promise_{this}, write_promise_{this} {
     }
 
     ~Pipe() noexcept(false) {
@@ -43,10 +64,9 @@ public:
         // TODO: Could we cleanly cancel pending read and write operations?
     }
 
-    // TODO: These have to be interruptible.
-    future<expected<ssize_t, read_error>> read(void *buf, size_t nbytes);
-    future<expected<ssize_t, write_error>> write(const void *buf, size_t nbytes);
-    static future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<Pipe>&& pipe);
+    cancellable_future<expected<ssize_t, read_error>> read(void *buf, size_t nbytes);
+    cancellable_future<expected<ssize_t, write_error>> write(const void *buf, size_t nbytes);
+    static cancellable_future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<Pipe>&& pipe);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;

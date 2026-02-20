@@ -8,24 +8,44 @@
 
 namespace el {
 
+sigset_t sigint_sigterm_sigset();
+
+class SignalBlockGuard {
+    NONCOPYABLE(SignalBlockGuard);
+    // true after we unblocked the signals (so we don't try twice).
+    bool unblocked_ = false;
+    sigset_t blocked_set_;
+public:
+    explicit SignalBlockGuard(sigset_t sigset);
+    expected<int, signalfd_error> make_signalfd();
+    void unblock();
+    ~SignalBlockGuard() noexcept(false);
+};
+
+class SignalFd;
+
+using signalfd_read_promise = default_cancellable_promise<expected<uint32_t, read_error>>;
+
 class SignalFd : private EpollRegistrantWithFd {
     NONCOPYABLE(SignalFd);
 
 private:
     bool read_ready_ = true;
 
-    promise<expected<uint32_t, read_error>> read_promise_;
+    signalfd_read_promise read_promise_;
 
 public:
     // Expects to be passed a non-blocking signalfd
-    SignalFd(Loop *loop, int fd) : EpollRegistrantWithFd(loop, fd, EpollInOut::in()) { }
+    SignalFd(Loop *loop, int fd) :
+        EpollRegistrantWithFd(loop, fd, EpollInOut::in()),
+        read_promise_() { }
 
     ~SignalFd() {
         // TODO: Could we cleanly cancel pending read and write operations?
     }
 
-    future<expected<uint32_t, read_error>> read();
-    static future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<SignalFd>&& signalfd);
+    cancellable_future<expected<uint32_t, read_error>> read();
+    static future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<SignalFd>&& signal_fd);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;

@@ -1,8 +1,10 @@
+#include <csignal>
 #include <fcntl.h>
 
 #include <cstdio>
 #include <expected>
 #include <span>
+#include <variant>
 
 #include "options.hpp"
 #include "util.hpp"
@@ -10,8 +12,19 @@
 #include "el/future.hpp"
 #include "el/loop.hpp"
 #include "el/pipe.hpp"
+#include "el/signalfd.hpp"
+#include "el/wait_any.hpp"
 
 using el::future;
+using el::cancellable_future;
+using el::self_cancellable_future;
+using el::Unit;
+using el::interrupt_future;
+
+struct Context {
+    el::Loop *loop;
+    interrupt_future *interruptor;
+};
 
 struct Buf {
     std::unique_ptr<char[]> owned;
@@ -21,31 +34,56 @@ struct Buf {
     char *ptr() const { return owned.get(); }
 };
 
+struct write_all_error {
+    size_t bytes_written;
+    std::variant<write_error, el::interrupt_result> err;
+};
+
 // TODO: Do this natively (in Pipe) without the callback fluff.
-future<expected<void, write_error>> write_all(el::Pipe *pipe, const void *buf, ssize_t count) {
-    auto write_fut = pipe->write(buf, count);
-    return std::move(write_fut).then([pipe, buf, count](expected<ssize_t, write_error>&& nbytes_expec) mutable {
+// TODO: If we do cancel, we should have some means of returning the partially completed write's byte count.
+future<expected<void, write_all_error>> write_all_helper(Context ctx, el::Pipe *pipe, const void *buf, ssize_t count, size_t bytes_written) {
+    auto write_fut = el::wait_interruptible(ctx.interruptor, pipe->write(buf, count));
+
+    return std::move(write_fut).then([ctx, pipe, buf, count, bytes_written](expected<expected<ssize_t, write_error>, el::interrupt_result>&& nbytes_expec_ir) mutable {
+        if (!nbytes_expec_ir.has_value()) {
+            return el::make_future(expected<void, write_all_error>(unexpected(write_all_error{bytes_written, nbytes_expec_ir.error()})));
+        }
+        auto& nbytes_expec = nbytes_expec_ir.value();
         if (!nbytes_expec.has_value()) {
-            return el::future{expected<void, write_error>(unexpected(nbytes_expec.error()))};
+            return el::make_future(expected<void, write_all_error>(unexpected(write_all_error{bytes_written, nbytes_expec.error()})));
         }
 
         size_t written_nbytes = static_cast<size_t>(nbytes_expec.value());
         tpf_assert(written_nbytes <= count);
         if (written_nbytes == count) {
-            return el::future{expected<void, write_error>()};
+            return el::make_future(expected<void, write_all_error>());
         }
 
         const char *charbuf = static_cast<const char *>(buf);
         charbuf += written_nbytes;
         size_t remaining_count = count - written_nbytes;
-        return write_all(pipe, charbuf, remaining_count);
+        return write_all_helper(ctx, pipe, charbuf, remaining_count, bytes_written + written_nbytes);
     });
 }
 
-future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
+future<expected<void, write_all_error>> write_all(Context ctx, el::Pipe *pipe, const void *buf, ssize_t count) {
+    size_t bytes_written = 0;
+    return write_all_helper(ctx, pipe, buf, count, bytes_written);
+}
+
+future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     std::span<char> slice = buf.get();
     auto read_fut = in_pipe->read(slice.data(), slice.size());
-    return std::move(read_fut).then([loop, MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
+    future<size_t> interrupt_fut = el::wait_any(*ctx.interruptor, read_fut);
+    return std::move(interrupt_fut).then([ctx, MC(buf), MC(in_pipe), MC(out_pipe), MC(read_fut)](size_t index) mutable {
+        if (index == 0) {
+            read_fut.cancel();
+            // Interrupted.
+            return el::future{expected<void, message_error>(unexpected(message_error("interrupted")))};
+        }
+        tpf_assert(read_fut.has_value());
+        expected<ssize_t, read_error> nbytes = std::move(read_fut.value());
+
         if (!nbytes.has_value()) {
             return el::future{expected<void, message_error>(unexpected(message_error(nbytes.error())))};
         }
@@ -65,25 +103,30 @@ future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& buf, u
         } else {
             size_t nbytes_u = static_cast<size_t>(nbytes.value());
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
-            auto write_fut = write_all(out_pipe.get(), buf.ptr(), nbytes_u);
-            return std::move(write_fut).then([MC(buf), nbytes_u, loop, MC(in_pipe), MC(out_pipe)](expected<void, write_error>&& void_expec) mutable {
-                if (!void_expec.has_value()) {
-                    return el::future{expected<void, message_error>(unexpected(message_error{void_expec.error()}))};
+            auto write_fut = write_all(ctx, out_pipe.get(), buf.ptr(), nbytes_u);
+            return std::move(write_fut).then([MC(buf), nbytes_u, ctx, MC(in_pipe), MC(out_pipe)](expected<void, write_all_error>&& result) mutable {
+                if (!result.has_value()) {
+                    tpf_setupf("Partial write of %zu bytes: %.*s\n", result.error().bytes_written, (int)result.error().bytes_written, buf.ptr());
+                    if (std::get_if<el::interrupt_result>(&result.error().err)) {
+                        return el::future{expected<void, message_error>(unexpected(message_error{"interrupted"}))};
+                    }
+                    write_error err = std::get<write_error>(std::move(result.error().err));
+                    return el::future{expected<void, message_error>(unexpected(message_error{err}))};
                 }
                 tpf_setupf("Wrote %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
 
                 // TODO: We might be infinitely recursing here.
-                return echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe));
+                return echo_with_buf(ctx, std::move(buf), std::move(in_pipe), std::move(out_pipe));
             });
         }
     });
 }
 
 
-el::future<expected<void, message_error>> echo_on_pipe(el::Loop *loop, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
+el::future<expected<void, message_error>> echo_on_pipe(Context ctx, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     const size_t TOY_BUF_SIZE = 128;
     Buf buf(TOY_BUF_SIZE);
-    return echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe));
+    return echo_with_buf(ctx, std::move(buf), std::move(in_pipe), std::move(out_pipe));
 }
 
 expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const char *path, int oflag) {
@@ -101,25 +144,42 @@ expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const ch
     return el::make_pipe_from_fd(loop, fd);
 }
 
-el::future<expected<void, message_error>> go(el::Loop *loop, const Options& opts) {
+el::future<expected<void, message_error>> go(Context ctx, const Options& opts) {
     tpf_setupf("go()...\n");
 
-    auto in_pipe_expec = open_pipe(loop, opts.in_fifo_path.c_str(), O_RDONLY);
+    auto in_pipe_expec = open_pipe(ctx.loop, opts.in_fifo_path.c_str(), O_RDONLY);
     if (!in_pipe_expec.has_value()) {
         return el::future{expected<void, message_error>(unexpected(in_pipe_expec.error()))};
     }
     // Silly(?) experiment using references with .value() on expected<_,_>.
     unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
-    auto out_pipe_expec = open_pipe(loop, opts.out_fifo_path.c_str(), O_WRONLY);
+    auto out_pipe_expec = open_pipe(ctx.loop, opts.out_fifo_path.c_str(), O_WRONLY);
     if (!out_pipe_expec.has_value()) {
         return el::future{expected<void, message_error>(unexpected(out_pipe_expec.error()))};
     }
     unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
 
-    return echo_on_pipe(loop, std::move(in_pipe), std::move(out_pipe))
+    return echo_on_pipe(ctx, std::move(in_pipe), std::move(out_pipe))
     .then([](expected<void, message_error>&& err) mutable {
         tpf_setupf("Echo completed...\n");
         return el::future{std::move(err)};
+    });
+}
+
+// This actually effectively takes ownership of the signal_fd.  Once we have more use for
+// signals we might want to split this stream.
+interrupt_future get_interrupt_future(el::SignalFd *signal_fd) {
+    return signal_fd->read().cancellable_then([signal_fd](expected<uint32_t, read_error>&& res) mutable {
+        if (!res.has_value()) {
+            return cancellable_future<expected<void, read_error>>(unexpected(res.error()));
+        }
+        uint32_t signo = res.value();
+
+        if (signo == SIGINT || signo == SIGTERM) {
+            return cancellable_future<expected<void, read_error>>{expected<void, read_error>()};
+        }
+
+        return get_interrupt_future(signal_fd);
     });
 }
 
@@ -142,6 +202,14 @@ int main(int argc, const char **argv) {
     tpf_setupf("Hello, world!\n");
 
     {
+        el::SignalBlockGuard signal_block_guard(el::sigint_sigterm_sigset());
+        expected<int, signalfd_error> sigfd = signal_block_guard.make_signalfd();
+        if (!sigfd.has_value()) {
+            // TODO: stderr just here?
+            fprintf(stderr, "%s\n", sigfd.error().make_msg().c_str());
+            return 1;
+        }
+
         expected<int, epoll_create_error> fd_expec = el::Loop::make_epoll_fd();
         if (!fd_expec.has_value()) {
             tpf_setupf("%s\n", fd_expec.error().make_msg().c_str());
@@ -150,8 +218,30 @@ int main(int argc, const char **argv) {
         el::Loop loop(fd_expec.value());
         tpf_setupf("Constructed el::Loop\n");
 
-        loop.schedule([&loop, MC(opts)] mutable {
-            go(&loop, opts)
+        unique_ptr<el::SignalFd> signal_fd = make_unique<el::SignalFd>(&loop, sigfd.value());
+
+        loop.schedule([&loop, MC(signal_fd), MC(opts)] mutable {
+            interrupt_future interruptor_flat =
+                    get_interrupt_future(signal_fd.get());
+            // TODO: Would be nice if we could make and pass interruptors without this allocation -- but it might require pointer/backpointer updates, so... ick.
+            unique_ptr<interrupt_future> interruptor = make_unique<interrupt_future>(std::move(interruptor_flat));
+            interrupt_future *interruptor_ptr = interruptor.get();
+
+            go(Context{&loop, interruptor_ptr}, opts)
+            .finally([MC(signal_fd), MC(interruptor)]() mutable {
+                interruptor->cancel();
+
+                return el::SignalFd::close(std::move(signal_fd)).then([](expected<close_errsv, epoll_ctl_error>&& ignore) mutable {
+                    // TODO: Of course, figure out how we want to handle these errors, or unify logging of tear-down close errors.
+                    if (!ignore.has_value()) {
+                        tpf_setupf("epoll_ctl_error upon signalfd close: %s\n", strerror_buf(ignore.error().errsv).msg());
+                    } else if (ignore.value().errsv != 0) {
+                        tpf_setupf("close errored for signalfd: %s\n", strerror_buf(ignore.value().errsv).msg());
+                    }
+
+                    return make_future(Unit{});
+                });
+            })
             .wait_with_callback([](expected<void, message_error> void_expec) {
                 if (!void_expec.has_value()) {
                     tpf_setupf("Finished with error: %s\n", void_expec.error().msg().c_str());

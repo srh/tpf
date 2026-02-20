@@ -134,4 +134,31 @@ void Loop::schedule(std::move_only_function<void ()>&& action) {
     enqueued_actions_.push_back(std::move(action));
 }
 
+std::string format_epoll_events(uint32_t events) {
+    std::string builder;
+    uint32_t recognized_flags = 0;
+#ifdef note_ev
+#error "note_ev already defined"
+#endif
+#define note_ev(flag) if (events & flag) { builder += #flag "|"; recognized_flags |= flag; }
+    note_ev(EPOLLIN);
+    note_ev(EPOLLOUT);
+    note_ev(EPOLLRDHUP);
+    note_ev(EPOLLPRI);
+    note_ev(EPOLLERR);
+    note_ev(EPOLLHUP);
+    // Non-event flags, but print if we have this pollution
+    note_ev(EPOLLET);
+    note_ev(EPOLLONESHOT);
+    note_ev(EPOLLWAKEUP);
+    note_ev(EPOLLEXCLUSIVE);
+#undef note_ev
+    // chop off last " |" if non-empty
+    builder.resize(std::max<size_t>(builder.size(), 1) - 1);
+    if (recognized_flags != events) {
+        builder += "|" + std::to_string(events);
+    }
+    return builder;
+}
+
 }  // namespace el

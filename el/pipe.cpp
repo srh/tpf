@@ -10,35 +10,6 @@
 
 namespace el {
 
-// TODO: Move.
-std::string format_epoll_events(uint32_t events) {
-    std::string builder;
-    uint32_t recognized_flags = 0;
-#ifdef note_ev
-#error "note_ev already defined"
-#endif
-#define note_ev(flag) if (events & flag) { builder += #flag "|"; recognized_flags |= flag; }
-    note_ev(EPOLLIN);
-    note_ev(EPOLLOUT);
-    note_ev(EPOLLRDHUP);
-    note_ev(EPOLLPRI);
-    note_ev(EPOLLERR);
-    note_ev(EPOLLHUP);
-    // Non-event flags, but print if we have this pollution
-    note_ev(EPOLLET);
-    note_ev(EPOLLONESHOT);
-    note_ev(EPOLLWAKEUP);
-    note_ev(EPOLLEXCLUSIVE);
-#undef note_ev
-    // chop off last " |" if non-empty
-    builder.resize(std::max<size_t>(builder.size(), 1) - 1);
-    if (recognized_flags != events) {
-        builder += "|" + std::to_string(events);
-    }
-    return builder;
-}
-
-
 expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) {
     {
         // Assert the FD is a pipe/fifo.
@@ -68,7 +39,7 @@ expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) 
 }
 
 void Pipe::on_update(Loop *loop, uint32_t events) {
-    tpf_setupf("on_update has events %" PRIu32 ": %s\n", events, format_epoll_events(events).c_str());
+    tpf_setupf("Pipe::on_update has events %" PRIu32 ": %s\n", events, format_epoll_events(events).c_str());
     bool is_destructed = false;
 
     const bool read_update = events & (EPOLLIN | EPOLLHUP | EPOLLERR);
@@ -97,11 +68,11 @@ void Pipe::on_update(Loop *loop, uint32_t events) {
     }
 }
 
-future<expected<ssize_t, read_error>> Pipe::read(void *buf, size_t nbytes) {
-    tpf_assert(read_promise_.is_default_constructed());
+cancellable_future<expected<ssize_t, read_error>> Pipe::read(void *buf, size_t nbytes) {
+    tpf_assert(read_promise_.is_default_constructed_but_for_completions());
     tpf_assert(read_buf_ == nullptr);
     tpf_assert(read_nbytes_ == 0);
-    future<expected<ssize_t, read_error>> fut(&read_promise_);
+    cancellable_future<expected<ssize_t, read_error>> fut(&read_promise_);
     read_buf_ = buf;
     read_nbytes_ = nbytes;
 
@@ -149,11 +120,11 @@ void Pipe::try_doing_read() {
     std::move(read_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
-future<expected<ssize_t, write_error>> Pipe::write(const void *buf, size_t nbytes) {
-    tpf_assert(write_promise_.is_default_constructed());
+cancellable_future<expected<ssize_t, write_error>> Pipe::write(const void *buf, size_t nbytes) {
+    tpf_assert(write_promise_.is_default_constructed_but_for_completions());
     tpf_assert(write_buf_ == nullptr);
     tpf_assert(write_nbytes_ == 0);
-    future<expected<ssize_t, write_error>> fut(&write_promise_);
+    cancellable_future<expected<ssize_t, write_error>> fut(&write_promise_);
     write_buf_ = buf;
     write_nbytes_ = nbytes;
 
@@ -198,16 +169,39 @@ void Pipe::try_doing_write() {
     std::move(write_promise_).supply_value_and_detach(std::move(nbytes_expec));
 }
 
-future<expected<close_errsv, epoll_ctl_error>> Pipe::close(unique_ptr<Pipe>&& pipe) {
-    tpf_assert(pipe->read_promise_.is_default_constructed());
-    tpf_assert(pipe->write_promise_.is_default_constructed());
+cancellable_future<expected<close_errsv, epoll_ctl_error>> Pipe::close(unique_ptr<Pipe>&& pipe) {
+    tpf_assert(pipe->read_promise_.is_default_constructed_but_for_completions());
+    tpf_assert(pipe->write_promise_.is_default_constructed_but_for_completions());
 
     auto errsv_expec = pipe->deregister_and_close();
 
     // Destruct pipe before callba... returning.
     pipe.reset();
 
-    return future<expected<close_errsv, epoll_ctl_error>>(std::move(errsv_expec));
+    return cancellable_future<expected<close_errsv, epoll_ctl_error>>(std::move(errsv_expec));
+}
+
+// Maybe cancelling reads and writes should just leave that side of the Pipe in an invalid
+// state.  Because right now a user could easily cancel() a future without checking
+// whether the operation completed.
+
+void pipe_read_promise::cancel() {
+    // When cancel() gets called, we are already detached from our matching_future_.
+    tpf_assert(this->matching_future_ == nullptr);
+
+    tpf_assert(pipe_->read_buf_ != nullptr);
+    pipe_->read_buf_ = nullptr;
+    pipe_->read_nbytes_ = 0;
+
+}
+
+void pipe_write_promise::cancel() {
+    // When cancel() gets called, we are already detached from our matching_future_.
+    tpf_assert(this->matching_future_ == nullptr);
+
+    tpf_assert(pipe_->write_buf_ != nullptr);
+    pipe_->write_buf_ = nullptr;
+    pipe_->write_nbytes_ = 0;
 
 }
 

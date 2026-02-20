@@ -76,6 +76,7 @@ struct epoll_wait_error : errsv_error {};
 struct epoll_create_error : errsv_error {};
 struct read_error : errsv_error {};
 struct write_error : errsv_error {};
+struct signalfd_error : errsv_error {};
 
 // Naming might need to change: STL uses _error suffix for exception types
 struct message_error {

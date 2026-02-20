@@ -67,6 +67,8 @@ private:
     [[nodiscard]] expected<void, epoll_wait_error> handle_wakeups(bool blocking_wait);
 };
 
+std::string format_epoll_events(uint32_t events);
+
 }  // namespace el
 
 #endif  // TPF_EL_LOOP_HPP
