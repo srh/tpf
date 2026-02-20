@@ -11,6 +11,8 @@
 #include "el/loop.hpp"
 #include "el/pipe.hpp"
 
+using el::future;
+
 struct Buf {
     std::unique_ptr<char[]> owned;
     size_t length = 0;
@@ -19,8 +21,28 @@ struct Buf {
     char *ptr() const { return owned.get(); }
 };
 
+// TODO: Do this natively (in Pipe) without the callback fluff.
+future<expected<void, write_error>> write_all(el::Pipe *pipe, const void *buf, ssize_t count) {
+    auto write_fut = pipe->write(buf, count);
+    return std::move(write_fut).then([pipe, buf, count](expected<ssize_t, write_error>&& nbytes_expec) mutable {
+        if (!nbytes_expec.has_value()) {
+            return el::future{expected<void, write_error>(unexpected(nbytes_expec.error()))};
+        }
 
-el::future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
+        size_t written_nbytes = static_cast<size_t>(nbytes_expec.value());
+        tpf_assert(written_nbytes <= count);
+        if (written_nbytes == count) {
+            return el::future{expected<void, write_error>()};
+        }
+
+        const char *charbuf = static_cast<const char *>(buf);
+        charbuf += written_nbytes;
+        size_t remaining_count = count - written_nbytes;
+        return write_all(pipe, charbuf, remaining_count);
+    });
+}
+
+future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     std::span<char> slice = buf.get();
     auto read_fut = in_pipe->read(slice.data(), slice.size());
     return std::move(read_fut).then([loop, MC(buf), MC(in_pipe), MC(out_pipe)](expected<ssize_t, read_error>&& nbytes) mutable {
@@ -41,19 +63,15 @@ el::future<expected<void, message_error>> echo_with_buf(el::Loop *loop, Buf&& bu
                 return el::future{expected<void, message_error>()};
             });
         } else {
-            tpf_setupf("Read %zu bytes: %.*s\n", nbytes.value(), (int)nbytes.value(), buf.ptr());
-            auto write_fut = out_pipe->write(buf.ptr(), nbytes.value());
-            return std::move(write_fut).then([MC(buf), nbytes, loop, MC(in_pipe), MC(out_pipe)](expected<ssize_t, write_error>&& nbytes_expec) mutable {
-                if (!nbytes_expec.has_value()) {
-                    return el::future{expected<void, message_error>(unexpected(message_error{nbytes_expec.error()}))};
+            size_t nbytes_u = static_cast<size_t>(nbytes.value());
+            tpf_setupf("Read %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
+            auto write_fut = write_all(out_pipe.get(), buf.ptr(), nbytes_u);
+            return std::move(write_fut).then([MC(buf), nbytes_u, loop, MC(in_pipe), MC(out_pipe)](expected<void, write_error>&& void_expec) mutable {
+                if (!void_expec.has_value()) {
+                    return el::future{expected<void, message_error>(unexpected(message_error{void_expec.error()}))};
                 }
-                size_t written_nbytes = static_cast<size_t>(nbytes_expec.value());
-                tpf_setupf("Wrote %zu bytes: %.*s\n", written_nbytes, (int)written_nbytes, buf.ptr());
-                if (written_nbytes != nbytes) {
-                    // TODO: Write all bytes in a loop.
-                    // Uh, wouldn't we get an error?
-                    return el::future{expected<void, message_error>(unexpected(message_error{"write was short"}))};
-                }
+                tpf_setupf("Wrote %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
+
                 // TODO: We might be infinitely recursing here.
                 return echo_with_buf(loop, std::move(buf), std::move(in_pipe), std::move(out_pipe));
             });
