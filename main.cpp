@@ -1,6 +1,9 @@
-#include <csignal>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <netdb.h>
+#include <sys/socket.h>
 
+#include <csignal>
 #include <cstdio>
 #include <expected>
 #include <span>
@@ -71,11 +74,11 @@ future<expected<void, write_all_error>> write_all(Context ctx, el::Pipe *pipe, c
     return write_all_helper(ctx, pipe, buf, count, bytes_written);
 }
 
-future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
+future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, el::Pipe *in_pipe, el::Pipe *out_pipe) {
     std::span<char> slice = buf.get();
     auto read_fut = in_pipe->read(slice.data(), slice.size());
     future<size_t> interrupt_fut = el::wait_any(*ctx.interruptor, read_fut);
-    return std::move(interrupt_fut).then([ctx, MC(buf), MC(in_pipe), MC(out_pipe), MC(read_fut)](size_t index) mutable {
+    return std::move(interrupt_fut).then([ctx, MC(buf), in_pipe, out_pipe, MC(read_fut)](size_t index) mutable {
         if (index == 0) {
             read_fut.cancel();
             // Interrupted.
@@ -89,22 +92,12 @@ future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, uniq
         }
         if (nbytes == 0) {
             tpf_setupf("EOF.  Ending loop.\n");
-            return el::Pipe::close(std::move(in_pipe))
-            .then( [](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
-                if (!errsv_expec.has_value()) {
-                    return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
-                }
-                if (errsv_expec.value().errsv != 0) {
-                    // TODO: Janky error messaging.
-                    tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
-                }
-                return el::future{expected<void, message_error>()};
-            });
+            return el::future{expected<void, message_error>()};
         } else {
             size_t nbytes_u = static_cast<size_t>(nbytes.value());
             tpf_setupf("Read %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
-            auto write_fut = write_all(ctx, out_pipe.get(), buf.ptr(), nbytes_u);
-            return std::move(write_fut).then([MC(buf), nbytes_u, ctx, MC(in_pipe), MC(out_pipe)](expected<void, write_all_error>&& result) mutable {
+            auto write_fut = write_all(ctx, out_pipe, buf.ptr(), nbytes_u);
+            return std::move(write_fut).then([MC(buf), nbytes_u, ctx, in_pipe, out_pipe](expected<void, write_all_error>&& result) mutable {
                 if (!result.has_value()) {
                     tpf_setupf("Partial write of %zu bytes: %.*s\n", result.error().bytes_written, (int)result.error().bytes_written, buf.ptr());
                     if (std::get_if<el::interrupt_result>(&result.error().err)) {
@@ -116,7 +109,7 @@ future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, uniq
                 tpf_setupf("Wrote %zu bytes: %.*s\n", nbytes_u, (int)nbytes_u, buf.ptr());
 
                 // TODO: We might be infinitely recursing here.
-                return echo_with_buf(ctx, std::move(buf), std::move(in_pipe), std::move(out_pipe));
+                return echo_with_buf(ctx, std::move(buf), in_pipe, out_pipe);
             });
         }
     });
@@ -126,7 +119,51 @@ future<expected<void, message_error>> echo_with_buf(Context ctx, Buf&& buf, uniq
 el::future<expected<void, message_error>> echo_on_pipe(Context ctx, unique_ptr<el::Pipe>&& in_pipe, unique_ptr<el::Pipe>&& out_pipe) {
     const size_t TOY_BUF_SIZE = 128;
     Buf buf(TOY_BUF_SIZE);
-    return echo_with_buf(ctx, std::move(buf), std::move(in_pipe), std::move(out_pipe));
+    el::Pipe *in_ptr = in_pipe.get();
+    el::Pipe *out_ptr = out_pipe.get();
+    return echo_with_buf(ctx, std::move(buf), in_ptr, out_ptr).then([MC(in_pipe), MC(out_pipe)](auto&& val) mutable {
+        // TODO: likewise with signalfd (and echo_on_socket) figure out how to do teardown logging.
+        return el::Pipe::close(std::move(in_pipe))
+        .then( [MC(val), MC(out_pipe)](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
+            if (!errsv_expec.has_value()) {
+                return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
+            }
+            if (errsv_expec.value().errsv != 0) {
+                // TODO: Janky error messaging.
+                tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
+            }
+            return el::Pipe::close(std::move(out_pipe))
+            .then([MC(val)](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
+                if (!errsv_expec.has_value()) {
+                    return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
+                }
+                if (errsv_expec.value().errsv != 0) {
+                    // TODO: Janky error messaging.
+                    tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
+                }
+                return el::make_future(std::move(val));
+            });
+        });
+    });
+}
+
+el::future<expected<void, message_error>> echo_on_socket(Context ctx, unique_ptr<el::Pipe>&& bidir_pipe) {
+    const size_t TOY_BUF_SIZE = 128;
+    Buf buf(TOY_BUF_SIZE);
+    el::Pipe *ptr = bidir_pipe.get();
+    return echo_with_buf(ctx, std::move(buf), ptr, ptr).then([MC(bidir_pipe)](auto&& val) mutable {
+        return el::Pipe::close(std::move(bidir_pipe))
+        .then( [MC(val)](expected<close_errsv, epoll_ctl_error>&& errsv_expec) mutable {
+            if (!errsv_expec.has_value()) {
+                return el::future{expected<void, message_error>(unexpected(message_error(errsv_expec.error())))};
+            }
+            if (errsv_expec.value().errsv != 0) {
+                // TODO: Janky error messaging.
+                tpf_setupf("close() errored on pipe: %s\n", strerror_buf(errsv_expec.value().errsv).msg());
+            }
+            return el::make_future(std::move(val));
+        });
+    });
 }
 
 expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const char *path, int oflag) {
@@ -141,29 +178,163 @@ expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const ch
         return unexpected(message_error{"Error opening file "s + path + ": " + strerror_buf(errsv).msg()});
     }
 
-    return el::make_pipe_from_fd(loop, fd);
+    return el::make_pipe_from_fifo(loop, fd);
+}
+
+struct addrinfo_list {
+    NONCOPYABLE(addrinfo_list);
+    struct addrinfo *elems = nullptr;
+    addrinfo_list() = default;
+    ~addrinfo_list() noexcept {
+        if (elems != nullptr) {
+            freeaddrinfo(elems);
+        }
+    }
+};
+
+expected<int, message_error> open_client_tcp_socket_helper(const char *hostname, uint16_t portno) {
+    // TODO: Blocking.  getaddrinfo and presumably connect as well.
+    addrinfo_list addrinfos;
+    socklen_t addrlen;
+    struct sockaddr *addr;
+    {
+        retry_getaddrinfo:
+            const char *service = nullptr;
+        // TODO: Definitely don't pass hints or anything like that.
+        struct addrinfo *hints = nullptr;
+        int res = getaddrinfo(hostname, service, hints, &addrinfos.elems);
+        if (res != 0) {
+            if (res == EAI_SYSTEM) {
+                int errsv = errno;
+                // Unclear if possible, handling EINTR anyway.
+                if (errsv == EINTR) {
+                    goto retry_getaddrinfo;
+                }
+                return unexpected(message_error{"Error calling getaddrinfo: "s + strerror_buf(errsv).msg()});
+            }
+            return unexpected(message_error{"Error calling getaddrinfo: "s + gai_strerror(res)});
+        }
+
+        // TODO: Don't look at ai_next or anything.  No sir, just try the first address.
+
+        addrlen = addrinfos.elems->ai_addrlen;
+        addr = addrinfos.elems->ai_addr;
+    }
+
+    sa_family_t family = addr->sa_family;
+
+    if (family != AF_INET && family != AF_INET6) {
+        return unexpected(message_error{"Unsupported socket family resolved: "s + std::to_string(addr->sa_family)});
+    }
+
+    // TODO: use SOCK_NONBLOCK, handle EINPROGRESS with connect.  Or do that with accept first.
+ try_socket_again:
+    int fd = socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd == -1) {
+        int errsv = errno;
+        // Unclear from immediate manpage reading if this is possible.
+        if (errsv == EINTR) {
+            goto try_socket_again;
+        }
+        return unexpected(message_error{"Error opening tcp socket: "s + strerror_buf(errsv).msg()});
+    }
+
+    sockaddr_storage addr_inet;
+    memset(&addr_inet, 0, sizeof(addr_inet));
+    memcpy(&addr_inet, addr, addrlen);
+
+    if (family == AF_INET) {
+        struct sockaddr_in *addr_in = reinterpret_cast<sockaddr_in *>(&addr_inet);
+        tpf_assert(addr_in->sin_family == AF_INET);
+        addr_in->sin_port = htons(portno);
+    } else {
+        tpf_assert(family == AF_INET6);
+        struct sockaddr_in6 *addr_in = reinterpret_cast<sockaddr_in6 *>(&addr_inet);
+        tpf_assert(addr_in->sin6_family == AF_INET6);
+        addr_in->sin6_port = htons(portno);
+    }
+
+ try_connect_again:
+    int res = connect(fd, reinterpret_cast<const struct sockaddr *>(&addr_inet), addrlen);
+    if (res == -1) {
+        int errsv = errno;
+        if (errsv == EINTR) {
+            goto try_connect_again;
+        }
+        int discard = close(fd);  // Just close and ignore error.
+        return unexpected(message_error{"Error connecting tcp socket: "s + strerror_buf(errsv).msg()});
+    }
+
+    tpf_assert(res == 0);
+
+    int flags = fcntl(fd, F_GETFL);
+    // We set the cloexec flag (which we would check with F_GETFD, not F_GETFL), but not
+    // SOCK_NONBLOCK, in our socket call in this function that created fd.
+    tpf_assert(!(flags & O_NONBLOCK));
+    flags |= O_NONBLOCK;
+ try_fcntl_again:
+    res = fcntl(fd, F_SETFL, flags);
+    if (res == -1) {
+        int errsv = errno;
+        if (errsv == EINTR) {
+            // Not actually possible, really.
+            goto try_fcntl_again;
+        }
+        int discard = close(fd);  // Just close and ignore error.
+        return unexpected(message_error{"fcntl F_SETFL failed in open_client_tcp_socket_helper"});
+    }
+    tpf_assert(res == 0);
+
+    return fd;
+}
+
+expected<unique_ptr<el::Pipe>, message_error> open_client_tcp_socket(el::Loop *loop, const char *hostname, uint16_t portno) {
+    auto fd_expec = open_client_tcp_socket_helper(hostname, portno);
+    if (!fd_expec.has_value()) {
+        return unexpected(fd_expec.error());
+    }
+    return el::make_pipe_from_sockfd(loop, fd_expec.value());
 }
 
 el::future<expected<void, message_error>> go(Context ctx, const Options& opts) {
     tpf_setupf("go()...\n");
 
-    auto in_pipe_expec = open_pipe(ctx.loop, opts.in_fifo_path.c_str(), O_RDONLY);
-    if (!in_pipe_expec.has_value()) {
-        return el::future{expected<void, message_error>(unexpected(in_pipe_expec.error()))};
-    }
-    // Silly(?) experiment using references with .value() on expected<_,_>.
-    unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
-    auto out_pipe_expec = open_pipe(ctx.loop, opts.out_fifo_path.c_str(), O_WRONLY);
-    if (!out_pipe_expec.has_value()) {
-        return el::future{expected<void, message_error>(unexpected(out_pipe_expec.error()))};
-    }
-    unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
+    if (opts.fifo_mode.has_value()) {
+        auto& fifo_opts = opts.fifo_mode.value();
+        auto in_pipe_expec = open_pipe(ctx.loop, fifo_opts.in_fifo_path.c_str(), O_RDONLY);
+        if (!in_pipe_expec.has_value()) {
+            return el::future{expected<void, message_error>(unexpected(in_pipe_expec.error()))};
+        }
+        // Silly(?) experiment using references with .value() on expected<_,_>.
+        unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
+        auto out_pipe_expec = open_pipe(ctx.loop, fifo_opts.out_fifo_path.c_str(), O_WRONLY);
+        if (!out_pipe_expec.has_value()) {
+            return el::future{expected<void, message_error>(unexpected(out_pipe_expec.error()))};
+        }
+        unique_ptr<el::Pipe>& out_pipe = out_pipe_expec.value();
 
-    return echo_on_pipe(ctx, std::move(in_pipe), std::move(out_pipe))
-    .then([](expected<void, message_error>&& err) mutable {
-        tpf_setupf("Echo completed...\n");
-        return el::future{std::move(err)};
-    });
+        return echo_on_pipe(ctx, std::move(in_pipe), std::move(out_pipe))
+        .then([](expected<void, message_error>&& err) mutable {
+            tpf_setupf("Echo completed...\n");
+            return el::future{std::move(err)};
+        });
+    } else if (opts.socket_mode.has_value()) {
+        // TODO: Of course, support socket mode.
+        return el::make_future<expected<void, message_error>>(unexpected(message_error{"socket mode not supported yet"}));
+    } else {
+        tpf_assert(opts.client_socket_mode.has_value());
+        auto& client_socket_opts = opts.client_socket_mode.value();
+        auto client_pipe_expec = open_client_tcp_socket(ctx.loop, client_socket_opts.hostname.c_str(), client_socket_opts.portno);
+        if (!client_pipe_expec.has_value()) {
+            return el::future{expected<void, message_error>(unexpected(client_pipe_expec.error()))};
+        }
+
+        return echo_on_socket(ctx, std::move(client_pipe_expec.value()))
+        .then([](expected<void, message_error>&& err) mutable {
+            tpf_setupf("Echo completed...\n");
+            return el::future{std::move(err)};
+        });
+    }
 }
 
 // This actually effectively takes ownership of the signal_fd.  Once we have more use for

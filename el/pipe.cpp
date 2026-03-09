@@ -10,10 +10,9 @@
 
 namespace el {
 
-expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) {
+expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop, int fd, uintmax_t fd_type) {
     {
         // Assert the FD is a pipe/fifo.
-        // TODO: Pipe could be used with stream sockets, too, almost.
         // Character devices (or some) seem not to like being edge-triggered; investigate if ever relevant
         struct stat statbuf;
         int stat_res = ::fstat(fd, &statbuf);
@@ -21,8 +20,9 @@ expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) 
             int errsv = errno;
             return unexpected(message_error("fstat of presumed pipe failed: "s + strerror_buf(errsv).msg()));
         }
-        if (!S_ISFIFO(statbuf.st_mode)) {
-            return unexpected(message_error{std::format("st_mode & S_IFMT is 0{:o}", S_IFMT & (size_t)statbuf.st_mode)});
+
+        if ((statbuf.st_mode & S_IFMT) != fd_type) {
+            return unexpected(message_error{std::format("st_mode & S_IFMT is 0{:o}", S_IFMT & statbuf.st_mode)});
         }
     }
 
@@ -36,6 +36,14 @@ expected<unique_ptr<Pipe>, message_error> make_pipe_from_fd(Loop *loop, int fd) 
         }
     }
     return make_unique<Pipe>(loop, fd);
+}
+
+expected<unique_ptr<Pipe>, message_error> make_pipe_from_fifo(Loop *loop, int fd) {
+    return make_pipe_or_socket_from_fd(loop, fd, S_IFIFO);
+}
+
+expected<unique_ptr<Pipe>, message_error> make_pipe_from_sockfd(Loop *loop, int fd) {
+    return make_pipe_or_socket_from_fd(loop, fd, S_IFSOCK);
 }
 
 void Pipe::on_update(Loop *loop, uint32_t events) {
