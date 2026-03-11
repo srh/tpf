@@ -23,6 +23,7 @@ public:
     explicit Fd(int fd) : fd_(fd) { }
     ~Fd() {
         if (fd_ != -1) {
+            // TODO: Log or warn(?) or debug-log?  Stylistically I want us to use Fd::close().
             int res = ::close(fd_);
             // Don't check result.  TODO: For any type of fd?  Any platform?
             (void)res;
@@ -41,6 +42,15 @@ public:
     }
     int get() const {
         return fd_;
+    }
+    // Generally, this is "preferable" to letting the destructor run.
+    [[nodiscard]] int close() && {
+        tpf_assert(fd_ != -1);
+        // Don't check result for EINTR.  TODO: For any type of fd?  Any platform?
+        static_assert(__linux__);
+        int res = ::close(fd_);
+        fd_ = -1;
+        return res;
     }
     int release() && {
         int ret = fd_;

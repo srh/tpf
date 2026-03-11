@@ -74,9 +74,9 @@ private:
     void try_doing_write();
 };
 
-[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_from_fifo(Loop *loop, int fd);
-[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_from_sockfd(Loop *loop, int fd);
-[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop, int fd, uintmax_t fd_type);
+[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_from_fifo(Loop *loop, Fd&& fd);
+[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_from_sockfd(Loop *loop, Fd&& fd);
+[[nodiscard]] expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop, Fd&& fd, uintmax_t fd_type);
 
 }
 

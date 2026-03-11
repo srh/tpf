@@ -10,12 +10,12 @@
 
 namespace el {
 
-expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop, int fd, uintmax_t fd_type) {
+expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop, Fd&& fd, uintmax_t fd_type) {
     {
         // Assert the FD is a pipe/fifo.
         // Character devices (or some) seem not to like being edge-triggered; investigate if ever relevant
         struct stat statbuf;
-        int stat_res = ::fstat(fd, &statbuf);
+        int stat_res = ::fstat(fd.get(), &statbuf);
         if (stat_res == -1) {
             int errsv = errno;
             return unexpected(message_error("fstat of presumed pipe failed: "s + strerror_buf(errsv).msg()));
@@ -26,24 +26,24 @@ expected<unique_ptr<Pipe>, message_error> make_pipe_or_socket_from_fd(Loop *loop
         }
     }
 
-    int flags = fcntl(fd, F_GETFL);
+    int flags = fcntl(fd.get(), F_GETFL);
     if (!(flags & O_NONBLOCK)) {
         flags |= O_NONBLOCK;
-        int res = fcntl(fd, F_SETFL, flags);
+        int res = fcntl(fd.get(), F_SETFL, flags);
         if (res != 0) {
             int errsv = errno;
             return unexpected(message_error("fcntl of pipe failed: "s + strerror_buf(errsv).msg()));
         }
     }
-    return make_unique<Pipe>(loop, fd);
+    return make_unique<Pipe>(loop, std::move(fd).release());
 }
 
-expected<unique_ptr<Pipe>, message_error> make_pipe_from_fifo(Loop *loop, int fd) {
-    return make_pipe_or_socket_from_fd(loop, fd, S_IFIFO);
+expected<unique_ptr<Pipe>, message_error> make_pipe_from_fifo(Loop *loop, Fd&& fd) {
+    return make_pipe_or_socket_from_fd(loop, std::move(fd), S_IFIFO);
 }
 
-expected<unique_ptr<Pipe>, message_error> make_pipe_from_sockfd(Loop *loop, int fd) {
-    return make_pipe_or_socket_from_fd(loop, fd, S_IFSOCK);
+expected<unique_ptr<Pipe>, message_error> make_pipe_from_sockfd(Loop *loop, Fd&& fd) {
+    return make_pipe_or_socket_from_fd(loop, std::move(fd), S_IFSOCK);
 }
 
 void Pipe::on_update(Loop *loop, uint32_t events) {

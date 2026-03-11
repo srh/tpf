@@ -166,7 +166,7 @@ el::future<expected<void, message_error>> echo_on_socket(Context ctx, unique_ptr
     });
 }
 
-expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const char *path, int oflag) {
+expected<unique_ptr<el::Pipe>, message_error> open_fifo(el::Loop *loop, const char *path, int oflag) {
  try_again:
     // TODO: Can't open block?
     int fd = ::open(path, oflag | O_NONBLOCK | O_CLOEXEC);
@@ -178,7 +178,7 @@ expected<unique_ptr<el::Pipe>, message_error> open_pipe(el::Loop *loop, const ch
         return unexpected(message_error{"Error opening file "s + path + ": " + strerror_buf(errsv).msg()});
     }
 
-    return el::make_pipe_from_fifo(loop, fd);
+    return el::make_pipe_from_fifo(loop, el::Fd{fd});
 }
 
 struct addrinfo_list {
@@ -192,7 +192,7 @@ struct addrinfo_list {
     }
 };
 
-expected<int, message_error> open_client_tcp_socket_helper(const char *hostname, uint16_t portno) {
+expected<el::Fd, message_error> open_client_tcp_socket_helper(const char *hostname, uint16_t portno) {
     // TODO: Blocking.  getaddrinfo and presumably connect as well.
     addrinfo_list addrinfos;
     socklen_t addrlen;
@@ -229,8 +229,8 @@ expected<int, message_error> open_client_tcp_socket_helper(const char *hostname,
 
     // TODO: use SOCK_NONBLOCK, handle EINPROGRESS with connect.  Or do that with accept first.
  try_socket_again:
-    int fd = socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (fd == -1) {
+    int fd_raw = socket(addr->sa_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd_raw == -1) {
         int errsv = errno;
         // Unclear from immediate manpage reading if this is possible.
         if (errsv == EINTR) {
@@ -238,6 +238,7 @@ expected<int, message_error> open_client_tcp_socket_helper(const char *hostname,
         }
         return unexpected(message_error{"Error opening tcp socket: "s + strerror_buf(errsv).msg()});
     }
+    el::Fd fd{fd_raw};
 
     sockaddr_storage addr_inet;
     memset(&addr_inet, 0, sizeof(addr_inet));
@@ -255,32 +256,32 @@ expected<int, message_error> open_client_tcp_socket_helper(const char *hostname,
     }
 
  try_connect_again:
-    int res = connect(fd, reinterpret_cast<const struct sockaddr *>(&addr_inet), addrlen);
+    int res = connect(fd.get(), reinterpret_cast<const struct sockaddr *>(&addr_inet), addrlen);
     if (res == -1) {
         int errsv = errno;
         if (errsv == EINTR) {
             goto try_connect_again;
         }
-        int discard = close(fd);  // Just close and ignore error.
+        int discard = std::move(fd).close();  // Just close and ignore error.
         return unexpected(message_error{"Error connecting tcp socket: "s + strerror_buf(errsv).msg()});
     }
 
     tpf_assert(res == 0);
 
-    int flags = fcntl(fd, F_GETFL);
+    int flags = fcntl(fd.get(), F_GETFL);
     // We set the cloexec flag (which we would check with F_GETFD, not F_GETFL), but not
     // SOCK_NONBLOCK, in our socket call in this function that created fd.
     tpf_assert(!(flags & O_NONBLOCK));
     flags |= O_NONBLOCK;
  try_fcntl_again:
-    res = fcntl(fd, F_SETFL, flags);
+    res = fcntl(fd.get(), F_SETFL, flags);
     if (res == -1) {
         int errsv = errno;
         if (errsv == EINTR) {
             // Not actually possible, really.
             goto try_fcntl_again;
         }
-        int discard = close(fd);  // Just close and ignore error.
+        int discard = std::move(fd).close();  // Just close and ignore error.
         return unexpected(message_error{"fcntl F_SETFL failed in open_client_tcp_socket_helper"});
     }
     tpf_assert(res == 0);
@@ -293,7 +294,7 @@ expected<unique_ptr<el::Pipe>, message_error> open_client_tcp_socket(el::Loop *l
     if (!fd_expec.has_value()) {
         return unexpected(fd_expec.error());
     }
-    return el::make_pipe_from_sockfd(loop, fd_expec.value());
+    return el::make_pipe_from_sockfd(loop, std::move(fd_expec.value()));
 }
 
 el::future<expected<void, message_error>> go(Context ctx, const Options& opts) {
@@ -301,13 +302,13 @@ el::future<expected<void, message_error>> go(Context ctx, const Options& opts) {
 
     if (opts.fifo_mode.has_value()) {
         auto& fifo_opts = opts.fifo_mode.value();
-        auto in_pipe_expec = open_pipe(ctx.loop, fifo_opts.in_fifo_path.c_str(), O_RDONLY);
+        auto in_pipe_expec = open_fifo(ctx.loop, fifo_opts.in_fifo_path.c_str(), O_RDONLY);
         if (!in_pipe_expec.has_value()) {
             return el::future{expected<void, message_error>(unexpected(in_pipe_expec.error()))};
         }
         // Silly(?) experiment using references with .value() on expected<_,_>.
         unique_ptr<el::Pipe>& in_pipe = in_pipe_expec.value();
-        auto out_pipe_expec = open_pipe(ctx.loop, fifo_opts.out_fifo_path.c_str(), O_WRONLY);
+        auto out_pipe_expec = open_fifo(ctx.loop, fifo_opts.out_fifo_path.c_str(), O_WRONLY);
         if (!out_pipe_expec.has_value()) {
             return el::future{expected<void, message_error>(unexpected(out_pipe_expec.error()))};
         }
@@ -319,6 +320,8 @@ el::future<expected<void, message_error>> go(Context ctx, const Options& opts) {
             return el::future{std::move(err)};
         });
     } else if (opts.socket_mode.has_value()) {
+        // auto& socket_opts = opts.socket_mode.value();
+
         // TODO: Of course, support socket mode.
         return el::make_future<expected<void, message_error>>(unexpected(message_error{"socket mode not supported yet"}));
     } else {
