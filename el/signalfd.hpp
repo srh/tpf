@@ -45,7 +45,7 @@ public:
     }
 
     cancellable_future<expected<uint32_t, read_error>> read();
-    static future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<SignalFd>&& signal_fd);
+    static cancellable_future<expected<close_errsv, epoll_ctl_error>> close(unique_ptr<SignalFd>&& signal_fd);
 
 private:
     void on_update(Loop *loop, uint32_t events) override;

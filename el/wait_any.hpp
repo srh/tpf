@@ -6,6 +6,7 @@
 namespace el {
 
 using interrupt_future = cancellable_future<expected<void, read_error>>;
+using interrupt_promise = default_cancellable_promise<expected<void, read_error>>;
 struct interrupt_result {
     expected<void, read_error> result;
 };

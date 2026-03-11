@@ -52,8 +52,10 @@ private:
 
 public:
     // fd must be an O_NONBLOCK pipe fd
-    Pipe(Loop *loop, int fd) : EpollRegistrantWithFd(loop, fd, EpollInOut::inout()), read_promise_{this}, write_promise_{this} {
-    }
+    Pipe(Loop *loop, int fd) :
+        EpollRegistrantWithFd(loop, fd, EpollInOut::inout()),
+        read_promise_{this},
+        write_promise_{this} {}
 
     ~Pipe() noexcept(false) {
         if (destruct_pointer_ != nullptr) {

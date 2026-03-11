@@ -175,7 +175,9 @@ public:
         return matching_promise_ == nullptr && !value_.has_value();
     }
 
-
+    bool is_active() const {
+        return matching_promise_ != nullptr;
+    }
 
     void wait_with_callback(std::move_only_function<void (T&&)>&& fn) &&;
 
@@ -217,7 +219,7 @@ private:
 protected:
     base_promise() : matching_future_(nullptr), completion_notifies_{}, attached_callback_{} {}
 
-    base_promise(base_promise&& other) : matching_future_(other.matching_future_), completion_notifies_{}, attached_callback_(swap_out(other.attached_callback_)) {
+    base_promise(base_promise&& other) : matching_future_(other.matching_future_), completion_notifies_{std::move(other.completion_notifies_)}, attached_callback_(swap_out(other.attached_callback_)) {
         if (matching_future_ != nullptr) {
             matching_future_->matching_promise_ = this;
         }
@@ -227,12 +229,14 @@ protected:
     // Asserts we are in a default-constructed state
     base_promise& operator=(base_promise&& other) {
         tpf_assert(matching_future_ == nullptr && !attached_callback_);
+        tpf_assert(completion_notifies_.empty());
         matching_future_ = other.matching_future_;
         other.matching_future_ = nullptr;
         attached_callback_.swap(other.attached_callback_);
         if (matching_future_ != nullptr) {
             matching_future_->matching_promise_ = this;
         }
+        completion_notifies_.swap(other.completion_notifies_);
         return *this;
     }
 
@@ -246,8 +250,11 @@ public:
     bool is_default_constructed_but_for_completions() const {
         return matching_future_ == nullptr && !attached_callback_;
     }
+    bool completions_empty() const {
+        return completion_notifies_.empty();
+    }
     bool is_default_constructed() const {
-        return is_default_constructed_but_for_completions() && completion_notifies_.empty();
+        return is_default_constructed_but_for_completions() && completions_empty();
     }
     bool is_active() const {
         return !is_default_constructed_but_for_completions();
@@ -363,7 +370,8 @@ public:
 // -- you just lose the ability to cancel().
 template <class T>
 class cancellable_future : public future<T> {
-protected:
+public:
+    // Public, but only for the sake of assertions.
     cancellable_promise<T> *matching_promise() {
         // The invariant is maintained that matching_promise_ is a cancellable_promise.
         return static_cast<cancellable_promise<T> *>(future<T>::matching_promise_);

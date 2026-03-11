@@ -114,7 +114,7 @@ try_again:
     std::move(read_promise_).supply_value_and_detach(std::move(signals_expec));
 }
 
-future<expected<close_errsv, epoll_ctl_error>> SignalFd::close(unique_ptr<SignalFd>&& signal_fd) {
+cancellable_future<expected<close_errsv, epoll_ctl_error>> SignalFd::close(unique_ptr<SignalFd>&& signal_fd) {
     tpf_assert(signal_fd->read_promise_.is_default_constructed_but_for_completions());
 
     auto errsv_expec = signal_fd->deregister_and_close();

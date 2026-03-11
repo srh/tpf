@@ -107,6 +107,35 @@ public:
     }
     void operator=(intrusive_list&& other) = delete;
 
+    void swap(intrusive_list& other) {
+        intrusive_list_node *other_next = other.next_;
+        intrusive_list_node *other_prev = other.prev_;
+        intrusive_list_node *og_next = next_;
+        intrusive_list_node *og_prev = prev_;
+        other_next->prev_ = this;
+        other_prev->next_ = this;
+        // other is empty case:  here other.next_ and other.prev_ point at this.
+        next_ = other.next_;
+        prev_ = other.prev_;
+        // other is empty case:  next_ and prev_ point at this (because other.next_ got updated first).
+
+        // TODO: Not a fan of this condition, but also not a fan of the pointer-aliasing
+        // slickness (which may have its own CPU perf penalty) in the move ctor either.
+        if (og_next == this) {
+            other.next_ = &other;
+            other.prev_ = &other;
+        } else {
+            other.next_ = og_next;
+            other.prev_ = og_prev;
+            og_next->prev_ = &other;
+            og_prev->next_ = &other;
+        }
+
+        // TODO: Remove.
+        assert_shallow();
+        other.assert_shallow();
+    }
+
     intrusive_list_node *head() {
         return next_;
     }

@@ -10,18 +10,18 @@ private:
     int fd_ = -1;
 public:
     NONCOPYABLE(Fd);
-    Fd(Fd&& other) {
+    Fd(Fd&& other) noexcept {
         fd_ = other.fd_;
         other.fd_ = -1;
     }
-    Fd& operator=(Fd&& other) {
+    Fd& operator=(Fd&& other) noexcept {
         Fd tmp(std::move(other));
         std::swap(fd_, tmp.fd_);
         return *this;
     }
     Fd() = default;
-    explicit Fd(int fd) : fd_(fd) { }
-    ~Fd() {
+    explicit Fd(int fd) noexcept : fd_(fd) { }
+    ~Fd() noexcept {
         if (fd_ != -1) {
             // TODO: Log or warn(?) or debug-log?  Stylistically I want us to use Fd::close().
             int res = ::close(fd_);
@@ -52,7 +52,7 @@ public:
         fd_ = -1;
         return res;
     }
-    int release() && {
+    [[nodiscard]] int release() && {
         int ret = fd_;
         fd_ = -1;
         return ret;
