@@ -85,7 +85,7 @@ void SignalFd::try_doing_read() {
 
 try_again:
     ssize_t res = ::read(fd_.get(), &read_buf, sizeof(read_buf));
-    expected<int, read_error> signals_expec;
+    expected<uint32_t, read_error> signals_expec;
     if (res == -1) {
         int errsv = errno;
         tpf_setupf("SignalFd::read: read returns %zd, errno = %d\n", res, errsv);
