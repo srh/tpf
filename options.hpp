@@ -1,6 +1,7 @@
 #ifndef TPF_OPTIONS_HPP
 #define TPF_OPTIONS_HPP
 
+#include <cstdint>
 #include <string>
 
 #include "util.hpp"
